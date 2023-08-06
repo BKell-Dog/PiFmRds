@@ -198,6 +198,7 @@
 #define DEVIATION        25.0
 
 
+// This struct defines a command block according to DMA
 typedef struct {
     uint32_t info, src, dst, length,
          stride, next, pad[2];
@@ -205,7 +206,7 @@ typedef struct {
 
 #define BUS_TO_PHYS(x) ((x)&~0xC0000000)
 
-
+// This struct defines and stores the data needed for a mailbox request to interface with memory
 static struct {
     int handle;            /* From mbox_open() */
     unsigned mem_ref;    /* From mem_alloc() */
@@ -366,15 +367,16 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
     uint32_t phys_sample_dst = CM_GP0DIV;
     uint32_t phys_pwm_fifo_addr = PWM_PHYS_BASE + 0x18;
 
-
-    // Calculate the frequency control word
+    
+    // Calculate the frequency control word (Clock freq / Desired freq)
     // The fractional part is stored in the lower 12 bits
     uint32_t freq_ctl = ((float)(PLLFREQ / carrier_freq)) * ( 1 << 12 );
 
 
     for (int i = 0; i < NUM_SAMPLES; i++) {
         ctl->sample[i] = 0x5a << 24 | freq_ctl;    // Silence
-        // Write a frequency sample
+        
+        // Write a frequency sample to PWM to be transmitted
         cbp->info = BCM2708_DMA_NO_WIDE_BURSTS | BCM2708_DMA_WAIT_RESP;
         cbp->src = mem_virt_to_phys(ctl->sample + i);
         cbp->dst = phys_sample_dst;
@@ -382,7 +384,8 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
         cbp->stride = 0;
         cbp->next = mem_virt_to_phys(cbp + 1);
         cbp++;
-        // Delay
+        
+        // Control block for delay
         cbp->info = BCM2708_DMA_NO_WIDE_BURSTS | BCM2708_DMA_WAIT_RESP | BCM2708_DMA_D_DREQ | BCM2708_DMA_PER_MAP(5);
         cbp->src = mem_virt_to_phys(mbox.virt_addr);
         cbp->dst = phys_pwm_fifo_addr;
@@ -503,8 +506,9 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
             varying_ps = 0;
         }
         
-        usleep(5000);
+        usleep(5000); 
 
+        // Calculate the number of free slots left in the DMA buffer
         uint32_t cur_cb = mem_phys_to_virt(dma_reg[DMA_CONBLK_AD]);
         int last_sample = (last_cb - (uint32_t)mbox.virt_addr) / (sizeof(dma_cb_t) * 2);
         int this_sample = (cur_cb - (uint32_t)mbox.virt_addr) / (sizeof(dma_cb_t) * 2);
