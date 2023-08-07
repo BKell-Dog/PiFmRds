@@ -419,35 +419,34 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
     printf("ppm corr is %.4f, divider is %.4f (%d + %d*2^-12) [nominal 1096.4912].\n", 
                 ppm, divider, idivider, fdivider);
 
-    pwm_reg[PWM_CTL] = 0;
+    pwm_reg[PWM_CTL] = 0;                 // Disable PWM Module
     udelay(10);
-    clk_reg[PWMCLK_CNTL] = 0x5A000006;              // Source=PLLD and disable
+    clk_reg[PWMCLK_CNTL] = 0x5A000006;    // Set clock source to PLLD and siable clock
     udelay(100);
-    // theorically : 1096 + 2012*2^-12
-    clk_reg[PWMCLK_DIV] = 0x5A000000 | (idivider<<12) | fdivider;
+    clk_reg[PWMCLK_DIV] = 0x5A000000 | (idivider<<12) | fdivider; // Set clock divisor and therefore frequency; theorically div = 1096 + 2012*2^-12
     udelay(100);
-    clk_reg[PWMCLK_CNTL] = 0x5A000216;              // Source=PLLD and enable + MASH filter 1
+    clk_reg[PWMCLK_CNTL] = 0x5A000216;    // Set clock source to PLLD and enable + apply a MASH filter of 1
     udelay(100);
-    pwm_reg[PWM_RNG1] = 2;
+    pwm_reg[PWM_RNG1] = 2;                // Set PWM range register to 2, which determines PWM frequency.
     udelay(10);
-    pwm_reg[PWM_DMAC] = PWMDMAC_ENAB | PWMDMAC_THRSHLD;
+    pwm_reg[PWM_DMAC] = PWMDMAC_ENAB | PWMDMAC_THRSHLD; // Set DMA enabled and set DMA request threshold.
     udelay(10);
-    pwm_reg[PWM_CTL] = PWMCTL_CLRF;
+    pwm_reg[PWM_CTL] = PWMCTL_CLRF;       // Clear PWM control register
     udelay(10);
-    pwm_reg[PWM_CTL] = PWMCTL_USEF1 | PWMCTL_PWEN1;
+    pwm_reg[PWM_CTL] = PWMCTL_USEF1 | PWMCTL_PWEN1; // Set PWM control register to use FIFO mode 1 and enable PWM channel 1.
     udelay(10);
     
 
     // Initialise the DMA
-    dma_reg[DMA_CS] = BCM2708_DMA_RESET;
+    dma_reg[DMA_CS] = BCM2708_DMA_RESET;                 // Reset DMA control and status (CS) register
     udelay(10);
-    dma_reg[DMA_CS] = BCM2708_DMA_INT | BCM2708_DMA_END;
-    dma_reg[DMA_CONBLK_AD] = mem_virt_to_phys(ctl->cb);
-    dma_reg[DMA_DEBUG] = 7; // clear debug error flags
-    dma_reg[DMA_CS] = 0x10880001;    // go, mid priority, wait for outstanding writes
+    dma_reg[DMA_CS] = BCM2708_DMA_INT | BCM2708_DMA_END; // Set DMA CS register to enable interrupts and end-of-transfer detection
+    dma_reg[DMA_CONBLK_AD] = mem_virt_to_phys(ctl->cb);  // Set address for control block (in physical mem, not virtual)
+    dma_reg[DMA_DEBUG] = 7;                              // Clear any debug error flags
+    dma_reg[DMA_CS] = 0x10880001;                        // Set DMA to begin, at mid priority, i.e. to wait for outstanding writes to complete
 
     
-    uint32_t last_cb = (uint32_t)ctl->cb;
+    uint32_t last_cb = (uint32_t)ctl->cb;                // Store address of the most previous control block
 
     // Data structures for baseband data
     float data[DATA_SIZE];
@@ -456,6 +455,9 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
 
     // Initialize the baseband generator
     if(fm_mpx_open(audio_file, DATA_SIZE) < 0) return 1;
+
+    // By this point a data stream from the specified file has been initializerd in the fm_mpx_open function.
+    // Later we will send the array data[] into that class to be populated.
     
     // Initialize the RDS modulator
     char myps[9] = {0};
@@ -488,6 +490,7 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
     printf("Starting to transmit on %3.1f MHz.\n", carrier_freq/1e6);
 
     for (;;) {
+        
         // Default (varying) PS
         if(varying_ps) {
             if(count == 512) {
