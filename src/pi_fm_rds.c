@@ -564,33 +564,43 @@ int main(int argc, char **argv) {
     // Parse command-line arguments
     for(int i=1; i<argc; i++) {
         char *arg = argv[i];
-        char *param = NULL;
+        char *param[argc] = NULL;
+
+        for (int j = i; j < argc; j++) {
+            if (argv[j][0] == '-') {
+                break;
+            }
+            else
+                param[j] = argv[j];
+        }
         
-        if(arg[0] == '-' && i+1 < argc) param = argv[i+1];
+        if(arg[0] == '-' && i+1 < argc) {
+            param = argv[i+1];
+        }
         
         if((strcmp("-wav", arg)==0 || strcmp("-audio", arg)==0) && param != NULL) {
             i++;
-            audio_file = param;
+            audio_file = param[0];
         } else if(strcmp("-freq", arg)==0 && param != NULL) {
             i++;
-            carrier_freq = 1e6 * atof(param);
+            carrier_freq = 1e6 * atof(param[0]);
             if(carrier_freq < 76e6 || carrier_freq > 108e6)
                 fatal("Incorrect frequency specification. Must be in megahertz, of the form 107.9, between 76 and 108.\n");
         } else if(strcmp("-pi", arg)==0 && param != NULL) {
             i++;
-            pi = (uint16_t) strtol(param, NULL, 16);
+            pi = (uint16_t) strtol(param[0], NULL, 16);
         } else if(strcmp("-ps", arg)==0 && param != NULL) {
             i++;
-            ps = param;
+            ps = param[0];
         } else if(strcmp("-rt", arg)==0 && param != NULL) {
             i++;
-            rt = param;
+            rt = param[0];
         } else if(strcmp("-ppm", arg)==0 && param != NULL) {
             i++;
-            ppm = atof(param);
+            ppm = atof(param[0]);
         } else if(strcmp("-ctl", arg)==0 && param != NULL) {
             i++;
-            control_pipe = param;
+            control_pipe = param[0];
         } else {
             fatal("Unrecognised argument: %s.\n"
             "Syntax: pi_fm_rds [-freq freq] [-audio file] [-ppm ppm_error] [-pi pi_code]\n"
