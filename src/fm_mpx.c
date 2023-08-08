@@ -169,14 +169,14 @@ int fm_mpx_get_samples(float *mpx_buffer) {
             audio_pos -= downsample_factor;
             
             if(audio_len == 0) {
-                for(int j=0; j<2; j++) { // one retry
-                    audio_len = sf_read_float(inf, audio_buffer, length);
+                for(int j=0; j<2; j++) {                                  // Loop for one attempt and one retry
+                    audio_len = sf_read_float(inf, audio_buffer, length); // Read "length" bits from file "inf" and store in "audio_buffer", store num of bits read in "audio_len"
                     if (audio_len < 0) {
                         fprintf(stderr, "Error reading audio\n");
                         return -1;
                     }
-                    if(audio_len == 0) {
-                        if( sf_seek(inf, 0, SEEK_SET) < 0 ) {
+                    if(audio_len == 0) {                                  // End of file has been reached
+                        if( sf_seek(inf, 0, SEEK_SET) < 0 ) {             // Rewind back to file beginning
                             fprintf(stderr, "Could not rewind in audio file, terminating\n");
                             return -1;
                         }
@@ -184,7 +184,7 @@ int fm_mpx_get_samples(float *mpx_buffer) {
                         break;
                     }
                 }
-                audio_index = 0;
+                audio_index = 0;                                          // Var used to keep track of position in audio array
             } else {
                 audio_index += channels;
                 audio_len -= channels;
@@ -211,27 +211,34 @@ int fm_mpx_get_samples(float *mpx_buffer) {
            the coefficients independently, but two-by-two, thus reducing
            the total number of multiplications by a factor of two
         */
-        float out_mono = 0;
-        float out_stereo = 0;
+        float out_mono = 0;    // Store filtered mono signal
+        float out_stereo = 0;  // Store filtered stereo signal  
         int ifbi = fir_index;  // ifbi = increasing FIR Buffer Index
         int dfbi = fir_index;  // dfbi = decreasing FIR Buffer Index
         for(int fi=0; fi<FIR_HALF_SIZE; fi++) {  // fi = Filter Index
+
+            // Decrement dfbi to read buffer backwards, and reset dfbi if end of buffer is reached.
             dfbi--;
-            if(dfbi < 0) dfbi = FIR_SIZE-1;
-            out_mono += 
-                low_pass_fir[fi] * 
-                    (fir_buffer_mono[ifbi] + fir_buffer_mono[dfbi]);
-            if(channels > 1) {
-                out_stereo += 
-                    low_pass_fir[fi] * 
-                        (fir_buffer_stereo[ifbi] + fir_buffer_stereo[dfbi]);
-            }
+            if(dfbi < 0) 
+                dfbi = FIR_SIZE-1;
+
+            // Calculate the filtered audio signal by multiplying the filter coefficient by the sum of
+            // two samples from the FIR buffer.
+            out_mono += low_pass_fir[fi] * (fir_buffer_mono[ifbi] + fir_buffer_mono[dfbi]);
+
+            // Do the same for stereo
+            if(channels > 1)
+                out_stereo += low_pass_fir[fi] * (fir_buffer_stereo[ifbi] + fir_buffer_stereo[dfbi]);
+
+            // Increment ifbi to read buffer forwards, and reset if out of bounds
             ifbi++;
-            if(ifbi >= FIR_SIZE) ifbi = 0;
+            if(ifbi >= FIR_SIZE) 
+                ifbi = 0;
         }
         // End of FIR filter
         
 
+        // Create data buffer
         mpx_buffer[i] = 
             mpx_buffer[i] +    // RDS data samples are currently in mpx_buffer
             4.05*out_mono;     // Unmodulated monophonic (or stereo-sum) signal
