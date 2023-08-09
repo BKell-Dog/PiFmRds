@@ -38,7 +38,7 @@
 #define FIR_HALF_SIZE 30 
 #define FIR_SIZE (2*FIR_HALF_SIZE-1)
 
-size_t num_of_files;
+
 size_t length;
 
 // coefficients of the low-pass FIR filter
@@ -66,8 +66,7 @@ float fir_buffer_stereo[FIR_SIZE] = {0};
 int fir_index = 0;
 int channels;
 
-#define NUM_OF_ALLOWED_FILES 2
-SNDFILE *inf[NUM_OF_ALLOWED_FILES]; // Allow for two audio files to be handled
+SNDFILE *inf;
 
 
 
@@ -81,13 +80,12 @@ float *alloc_empty_buffer(size_t length) {
 }
 
 
-int fm_mpx_open(char *filename[], size_t len) {
-    num_of_files = sizeof(filename) / sizeof(size_t);
+int fm_mpx_open(char *filename, size_t len) {
     length = len;
 
     if(filename != NULL) {
-        // Open the input files
-        SF_INFO sfinfo[num_of_files];
+        // Open the input file
+        SF_INFO sfinfo;
  
         // stdin or file on the filesystem?
         if(filename[0] == '-') {
@@ -98,22 +96,20 @@ int fm_mpx_open(char *filename[], size_t len) {
                 printf("Using stdin for audio input.\n");
             }
         } else {
-            for(int i = 0; i < num_of_files && i < NUM_OF_ALLOWED_FILES; i++) {
-                if (! (inf[i] = sf_open_fd(filename[i], SFM_READ, &sfinfo[i]))) {
-                    fprintf(stderr, "Error: could not open input file %s.\n", filename) ;
-                    return -1;
-                } else {
-                    printf("Using audio file: %s\n", filename);
-                }
+            if(! (inf = sf_open(filename, SFM_READ, &sfinfo))) {
+                fprintf(stderr, "Error: could not open input file %s.\n", filename) ;
+                return -1;
+            } else {
+                printf("Using audio file: %s\n", filename);
             }
         }
             
-        int in_samplerate = sfinfo[0].samplerate;
+        int in_samplerate = sfinfo.samplerate;
         downsample_factor = 228000. / in_samplerate;
     
         printf("Input: %d Hz, upsampling factor: %.2f\n", in_samplerate, downsample_factor);
 
-        channels = sfinfo[0].channels;
+        channels = sfinfo.channels;
         if(channels > 1) {
             printf("%d channels, generating stereo multiplex.\n", channels);
         } else {
@@ -174,13 +170,13 @@ int fm_mpx_get_samples(float *mpx_buffer) {
             
             if(audio_len == 0) {
                 for(int j=0; j<2; j++) {                                  // Loop for one attempt and one retry
-                    audio_len = sf_read_float(inf[0], audio_buffer, length); // Read "length" bits from file "inf" and store in "audio_buffer", store num of bits read in "audio_len"
+                    audio_len = sf_read_float(inf, audio_buffer, length); // Read "length" bits from file "inf" and store in "audio_buffer", store num of bits read in "audio_len"
                     if (audio_len < 0) {
                         fprintf(stderr, "Error reading audio\n");
                         return -1;
                     }
                     if(audio_len == 0) {                                  // End of file has been reached
-                        if( sf_seek(inf[0], 0, SEEK_SET) < 0 ) {             // Rewind back to file beginning
+                        if( sf_seek(inf, 0, SEEK_SET) < 0 ) {             // Rewind back to file beginning
                             fprintf(stderr, "Could not rewind in audio file, terminating\n");
                             return -1;
                         }
@@ -267,10 +263,8 @@ int fm_mpx_get_samples(float *mpx_buffer) {
 
 
 int fm_mpx_close() {
-    for (int i = 0; i < num_of_files && i < NUM_OF_ALLOWED_FILES; i++) {
-        if(sf_close(inf[i]) ) {
-            fprintf(stderr, "Error closing audio file");
-        }
+    if(sf_close(inf) ) {
+        fprintf(stderr, "Error closing audio file");
     }
     
     if(audio_buffer != NULL) free(audio_buffer);
