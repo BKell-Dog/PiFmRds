@@ -376,7 +376,7 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
     for (int i = 0; i < NUM_SAMPLES; i++) {
         ctl->sample[i] = 0x5a << 24 | freq_ctl;    // Silence
         
-        // Write a frequency sample to PWM to be transmitted
+        // Set up a control block for a future DMA transfer of audio data (data will be filled in below)
         cbp->info = BCM2708_DMA_NO_WIDE_BURSTS | BCM2708_DMA_WAIT_RESP;
         cbp->src = mem_virt_to_phys(ctl->sample + i);
         cbp->dst = phys_sample_dst;
@@ -385,7 +385,7 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
         cbp->next = mem_virt_to_phys(cbp + 1);
         cbp++;
         
-        // Control block for delay
+        // Set up a future control block for a delay.
         cbp->info = BCM2708_DMA_NO_WIDE_BURSTS | BCM2708_DMA_WAIT_RESP | BCM2708_DMA_D_DREQ | BCM2708_DMA_PER_MAP(5);
         cbp->src = mem_virt_to_phys(mbox.virt_addr);
         cbp->dst = phys_pwm_fifo_addr;
@@ -395,7 +395,7 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
         cbp++;
     }
     cbp--;
-    cbp->next = mem_virt_to_phys(mbox.virt_addr);
+    cbp->next = mem_virt_to_phys(mbox.virt_addr); // Here we reset the 'next' val of the last cb to be the address of the first cb (mbox.virt_addr), so we make an infinite loop.
 
     // Here we define the rate at which we want to update the GPCLK control 
     // register.
@@ -538,7 +538,7 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
             //int frac = (int)((dval - (float)intval) * SUBSIZE);
 
 
-            ctl->sample[last_sample++] = (0x5A << 24 | freq_ctl) + intval; //(frac > j ? intval + 1 : intval);
+            c->sample[last_sample++] = (0x5A << 24 | freq_ctl) + intval; //(frac > j ? intval + 1 : intval);
             if (last_sample == NUM_SAMPLES)
                 last_sample = 0;
 

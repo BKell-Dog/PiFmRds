@@ -145,7 +145,8 @@ int fm_mpx_open(char *filename, size_t len) {
         
         audio_pos = downsample_factor;
         audio_buffer = alloc_empty_buffer(length * channels);
-        if(audio_buffer == NULL) return -1;
+        if(audio_buffer == NULL) 
+            return -1;
 
     } // end if(filename != NULL)
     else {
@@ -162,16 +163,18 @@ int fm_mpx_open(char *filename, size_t len) {
 int fm_mpx_get_samples(float *mpx_buffer) {
     get_rds_samples(mpx_buffer, length);
 
-    if(inf  == NULL) return 0; // if there is no audio, stop here
+    if(inf == NULL) // If there is no audio, stop here 
+        return 0;
     
     for(int i=0; i<length; i++) {
+        
         if(audio_pos >= downsample_factor) {
             audio_pos -= downsample_factor;
             
             if(audio_len == 0) {
                 for(int j=0; j<2; j++) {                                  // Loop for one attempt and one retry
                     audio_len = sf_read_float(inf, audio_buffer, length); // Read "length" bits from file "inf" and store in "audio_buffer", store num of bits read in "audio_len"
-                    if (audio_len < 0) {
+                    if (audio_len < 0) {                                  // Handle error from sf_read_float
                         fprintf(stderr, "Error reading audio\n");
                         return -1;
                     }
@@ -181,13 +184,13 @@ int fm_mpx_get_samples(float *mpx_buffer) {
                             return -1;
                         }
                     } else {
-                        break;
+                        break;                                            // All is good, end loop.
                     }
                 }
-                audio_index = 0;                                          // Var used to keep track of position in audio array
+                audio_index = 0;  // Var used to keep track of position in audio array
             } else {
-                audio_index += channels;
-                audio_len -= channels;
+                audio_index += channels;        // For mono data, variables will increment by one.
+                audio_len -= channels;          // For stereo data, variables must increment by 2, since both channel bytes appear as a pair in memory.
             }
         }
 
@@ -202,15 +205,16 @@ int fm_mpx_get_samples(float *mpx_buffer) {
             fir_buffer_stereo[fir_index] = 
                 audio_buffer[audio_index] - audio_buffer[audio_index+1];
         }
+        
         fir_index++;
-        if(fir_index >= FIR_SIZE) fir_index = 0;
+        if(fir_index >= FIR_SIZE) 
+            fir_index = 0;
         
-        // Now apply the FIR low-pass filter
-        
-        /* As the FIR filter is symmetric, we do not multiply all 
-           the coefficients independently, but two-by-two, thus reducing
-           the total number of multiplications by a factor of two
-        */
+        /* Now apply the FIR low-pass filter.
+         * As the FIR filter is symmetric, we do not multiply all 
+         * the coefficients independently, but two-by-two, thus reducing
+         * the total number of multiplications by a factor of two
+         */
         float out_mono = 0;    // Store filtered mono signal
         float out_stereo = 0;  // Store filtered stereo signal  
         int ifbi = fir_index;  // ifbi = increasing FIR Buffer Index
