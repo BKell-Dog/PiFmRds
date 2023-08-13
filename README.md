@@ -183,6 +183,12 @@ The samples are played by `pi_fm_rds.c` that is adapted from Richard Hirst's [Pi
 * [EN 50067, Specification of the radio data system (RDS) for VHF/FM sound broadcasting in the frequency range 87.5 to 108.0 MHz](http://www.interactive-radio-system.com/docs/EN50067_RDS_Standard.pdf)
 
 
+### Helpful Reading
+
+* [Guide to DMA Programming] (https://github.com/fandahao17/Raspberry-Pi-DMA-Tutorial)
+* [MIT Guide to C Pointers and Pointer Arrays] (https://pdos.csail.mit.edu/6.828/2012/readings/pointers.pdf)
+* [BCM2835 Arm Peripherals Datasheet] (https://www.raspberrypi.org/app/uploads/2012/02/BCM2835-ARM-Peripherals.pdf)
+
 ## History
 
 * 2015-09-05: support for the Raspberry Pi 2 and later models

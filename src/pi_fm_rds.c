@@ -509,7 +509,7 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
             varying_ps = 0;
         }
         
-        usleep(5000); 
+        usleep(5000);
 
         // Calculate the number of free slots left in the DMA buffer
         uint32_t cur_cb = mem_phys_to_virt(dma_reg[DMA_CONBLK_AD]);
@@ -538,7 +538,7 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
             //int frac = (int)((dval - (float)intval) * SUBSIZE);
 
 
-            c->sample[last_sample++] = (0x5A << 24 | freq_ctl) + intval; //(frac > j ? intval + 1 : intval);
+            ctl->sample[last_sample++] = (0x5A << 24 | freq_ctl) + intval; //(frac > j ? intval + 1 : intval);
             if (last_sample == NUM_SAMPLES)
                 last_sample = 0;
 
