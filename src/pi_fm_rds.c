@@ -266,7 +266,7 @@ terminate(int num)
         mem_free(mbox.handle, mbox.mem_ref);
     }
 
-    printf("Terminating: cleanly deactivated the DMA engine and killed the carrier.\n");
+    printf("Terminating: cleanly deactivated the DMA engine and killed the carrier.\nError code %d\n", num);
     
     exit(num);
 }
@@ -313,10 +313,8 @@ map_peripheral(uint32_t base, uint32_t len)
 }
 
 
-
 #define SUBSIZE 1
 #define DATA_SIZE 5000
-
 
 int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt, float ppm, char *control_pipe) {
     // Catch all signals possible - it is vital we kill the DMA engine
@@ -454,7 +452,9 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
     int data_index = 0;
 
     // Initialize the baseband generator
-    if(fm_mpx_open(audio_file, DATA_SIZE) < 0) return 1;
+    char* filenames = {audio_file};
+    if(fm_mpx_open(filenames, DATA_SIZE, 1/* Change when developing for multiple stations */) < 0) 
+        return 1;
 
     // By this point a data stream from the specified file has been initializerd in the fm_mpx_open function.
     // Later we will send the array data[] into that class to be populated.
@@ -523,7 +523,8 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
         while (free_slots >= SUBSIZE) {
             // get more baseband samples if necessary
             if(data_len == 0) {
-                if( fm_mpx_get_samples(data) < 0 ) {
+                if( fm_mpx_get_samples(data, 1) < 0 ) {
+                    printf("Something went horribly wrong while fetching samples.\n");
                     terminate(0);
                 }
                 data_len = DATA_SIZE;
