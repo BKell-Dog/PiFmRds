@@ -177,9 +177,10 @@ int fm_mpx_open(char **filename, size_t len, size_t stations) {
 // 10 after.
 int fm_mpx_get_samples(float *mpx_buffer, int station) {
     get_rds_samples(mpx_buffer, length);
+    
     int index = station - 1;
     if (index < 0) {
-        printf("Improper station. Try a real integer between 1 and %d\n", MAX_STATIONS);
+        printf("Improper station. Enter a real integer between 1 and %d\n", MAX_STATIONS);
         return -1;
     }
 
@@ -196,17 +197,29 @@ int fm_mpx_get_samples(float *mpx_buffer, int station) {
             if(audio_len[index] == 0) { 
                 for(int j=0; j<2; j++) {                                                            // Loop for one attempt and one retry
                     audio_len[index] = sf_read_float(inf[index], audio_buffers[index], length);     // Read "length" bits from file "inf" and store in "audio_buffer", store num of bits read in "audio_len"
-                    if (audio_len[index] < 0) {                                                            // Handle error from sf_read_float
+                    if (audio_len[index] < 0) {                                                     // Handle error from sf_read_float
                         fprintf(stderr, "Error reading audio\n");
                         return -1;
                     }
-                    if(audio_len[index] == 0) {                                            // End of file has been reached
-                        if( sf_seek(inf[index], 0, SEEK_SET) < 0 ) {                // Rewind back to file beginning
+                    if (audio_len[index] < length) {                                // End of file has been reached
+                        printf("Attempting to rewind file.\n");
+                        if(sf_seek(inf[index], 0, SEEK_SET) < 0 ) {                 // Rewind back to file beginning
                             fprintf(stderr, "Could not rewind in audio file, terminating\n");
                             return -1;
                         }
-                    } else {
-                        break;                                            // All is good, end loop.
+                        else
+                        {
+                            printf("File rewound successfully.\n");
+                            
+                            /* Since audio_len < length, we know the buffer is not full. We already rewound the file to its beginning,
+                               now we have to fill in the remaining empty buffer registers with the bytes at the beginning of the file
+                               until the buffer is full, then we proceed as normal. */
+                            
+                            int left_to_cover = ((int) length) - ((int)audio_len[index]);
+                            int register_left_off_at = ((int)audio_len[index]) - 1;
+                            audio_len[index] = ((int)audio_len[index]) + sf_read_float(inf[index], &(audio_buffers[index][register_left_off_at]), left_to_cover);
+                            break;
+                        }
                     }
                 }
                 audio_index[index] = 0;  // Var used to keep track of position in audio array
@@ -216,7 +229,6 @@ int fm_mpx_get_samples(float *mpx_buffer, int station) {
             }
         }
 
-        
         // First store the current sample(s) into the FIR filter's ring buffer
         if(channels[index] == 0) {
             fir_buffer_mono[fir_index] = audio_buffers[index][audio_index[index]];

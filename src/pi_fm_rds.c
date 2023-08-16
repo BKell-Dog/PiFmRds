@@ -144,6 +144,7 @@
 #define BCM2708_DMA_RESET        (1<<31)
 #define BCM2708_DMA_INT            (1<<2)
 
+// Each DMA channel has 3 writeable registers:
 #define DMA_CS            (0x00/4)
 #define DMA_CONBLK_AD        (0x04/4)
 #define DMA_DEBUG        (0x20/4)
@@ -198,10 +199,15 @@
 #define DEVIATION        25.0
 
 
-// This struct defines a command block according to DMA
+// DMA Control Block Data Structure (p40 of datasheet): 8 words (256 bits)
 typedef struct {
-    uint32_t info, src, dst, length,
-         stride, next, pad[2];
+    uint32_t info;   // TI: transfer information
+    uint32_t src;    // SOURCE_AD
+    uint32_t dst;    // DEST_AD
+    uint32_t length; // TXFR_LEN: transfer length
+    uint32_t stride; // 2D stride mode
+    uint32_t next;   // NEXTCONBK
+    uint32_t pad[2]; // _reserved_
 } dma_cb_t;
 
 #define BUS_TO_PHYS(x) ((x)&~0xC0000000)
@@ -453,8 +459,11 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
 
     // Initialize the baseband generator
     char* filenames = {audio_file};
-    if(fm_mpx_open(filenames, DATA_SIZE, 1/* Change when developing for multiple stations */) < 0) 
+    if(fm_mpx_open(filenames, DATA_SIZE, 1/* Change when developing for multiple stations */) < 0)
+    {
+        printf("Error when trying to open file(s). \n");
         return 1;
+    }
 
     // By this point a data stream from the specified file has been initializerd in the fm_mpx_open function.
     // Later we will send the array data[] into that class to be populated.
