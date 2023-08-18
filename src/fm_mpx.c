@@ -83,90 +83,85 @@ float *alloc_empty_buffer(size_t length) {
 }
 
 
-int fm_mpx_open(char **filename, size_t len, size_t stations) {
+int fm_mpx_open(char *filename, size_t len, int station) {
     length = len;
-
-    for (int i = 0; i < MAX_STATIONS && i < stations; i++) {
-        
-        if(filename != NULL) {
+    
+    if(filename != NULL) {
             
-            // Open the input file
-            SF_INFO sfinfo;
-     
+        // Open the input file
+        SF_INFO sfinfo;
             
-            // stdin or file on the filesystem?
-            if(filename[0] == '-') {
-                if(! (inf[i] = sf_open_fd(fileno(stdin), SFM_READ, &sfinfo, 0))) {
-                    fprintf(stderr, "Error: could not open stdin for audio input.\n");
-                    printf("Error: could not open stdin for audio input.\n");
-                    return -1;
-                } else {
-                    printf("Using stdin for audio input.\n");
-                }
+        // stdin or file on the filesystem?
+        if(filename[0] == '-') {
+            if(! (inf[station] = sf_open_fd(fileno(stdin), SFM_READ, &sfinfo, 0))) {
+                fprintf(stderr, "Error: could not open stdin for audio input.\n");
+                printf("Error: could not open stdin for audio input.\n");
+                return -1;
             } else {
-                inf[i] = sf_open(filename, SFM_READ, &sfinfo);
-                if(!inf[i]) {
-                    fprintf(stderr, "Error: could not open input file %s.\n", filename);
-                    printf("Error: could not open input file %s. \n", filename);
-                    return -1;
-                } else {
-                    printf("Using audio file: %s\n", filename);
-                }
+                printf("Using stdin for audio input.\n");
             }
-                
-            int in_samplerate = sfinfo.samplerate;
-            downsample_factor[i] = 228000. / in_samplerate;
-        
-            printf("Input: %d Hz, upsampling factor: %.2f\n", in_samplerate, downsample_factor);
-
-            channels[i] = sfinfo.channels;
-            if(channels[i] > 1) {
-                printf("%d channels, generating stereo multiplex.\n", channels[i]);
+        } else {
+            inf[station] = sf_open(filename, SFM_READ, &sfinfo);
+            if(!inf[station]) {
+                fprintf(stderr, "Error: could not open input file %s.\n", filename);
+                printf("Error: could not open input file %s. \n", filename);
+                return -1;
             } else {
-                printf("1 channel, monophonic operation.\n");
+                printf("Using audio file: %s\n", filename);
             }
-        
-        
-            // Create the low-pass FIR filter
-            float cutoff_freq = 15000 * .8;
-            if(in_samplerate/2 < cutoff_freq)
-                cutoff_freq = in_samplerate/2 * .8;
-        
-        
-        
-            low_pass_fir[FIR_HALF_SIZE-1] = 2 * cutoff_freq / 228000 /2;
-            // Here we divide this coefficient by two because it will be counted twice
-            // when applying the filter
-
-            // Only store half of the filter since it is symmetric
-            for(int i=1; i<FIR_HALF_SIZE; i++) {
-                low_pass_fir[FIR_HALF_SIZE-1-i] = 
-                    sin(2 * PI * cutoff_freq * i / 228000) / (PI * i)      // sinc
-                    * (.54 - .46 * cos(2*PI * (i+FIR_HALF_SIZE) / (2*FIR_HALF_SIZE)));
-                                                                  // Hamming window
-            }
-            printf("Created low-pass FIR filter for audio channels, with cutoff at %.1f Hz\n", cutoff_freq);
-        
-            /*
-            for(int i=0; i<FIR_HALF_SIZE; i++) {
-                printf("%.5f ", low_pass_fir[i]);
-            }
-            printf("\n");
-            */
-            
-            audio_pos[i] = downsample_factor[i];
-            for (int i = 0; i < stations; i++) {
-                audio_buffers[i] = alloc_empty_buffer(length * channels[i]);
-                if(audio_buffers[i] == NULL) 
-                    return -1;
-            }
-
-        } // end if(filename != NULL)
-        else {
-            printf("Error: no audio found.\n");
-            inf[i] = NULL;
-            // inf == NULL indicates that there is no audio
         }
+                
+        int in_samplerate = sfinfo.samplerate;
+        downsample_factor[station] = 228000. / in_samplerate;
+        
+        printf("Input: %d Hz, upsampling factor: %.2f\n", in_samplerate, downsample_factor);
+
+        channels[station] = sfinfo.channels;
+        if(channels[station] > 1) {
+            printf("%d channels, generating stereo multiplex.\n", channels[station]);
+        } else {
+            printf("1 channel, monophonic operation.\n");
+        }
+        
+        
+        // Create the low-pass FIR filter
+        float cutoff_freq = 15000 * .8;
+        if(in_samplerate/2 < cutoff_freq)
+            cutoff_freq = in_samplerate/2 * .8;
+        
+        
+        
+        low_pass_fir[FIR_HALF_SIZE-1] = 2 * cutoff_freq / 228000 /2;
+        // Here we divide this coefficient by two because it will be counted twice
+        // when applying the filter
+
+        // Only store half of the filter since it is symmetric
+        for(int i=1; i<FIR_HALF_SIZE; i++) {
+            low_pass_fir[FIR_HALF_SIZE-1-i] = 
+                sin(2 * PI * cutoff_freq * i / 228000) / (PI * i)      // sinc
+                * (.54 - .46 * cos(2*PI * (i+FIR_HALF_SIZE) / (2*FIR_HALF_SIZE)));
+                                                                  // Hamming window
+        }
+        printf("Created low-pass FIR filter for audio channels, with cutoff at %.1f Hz\n", cutoff_freq);
+        
+        /*
+        for(int i=0; i<FIR_HALF_SIZE; i++) {
+            printf("%.5f ", low_pass_fir[i]);
+        }
+        printf("\n");
+        */
+            
+        audio_pos[station] = downsample_factor[station];
+        audio_buffers[station] = alloc_empty_buffer(length * channels[station]);
+        if(audio_buffers[station] == NULL) 
+            return -1;
+    
+
+    } // end if(filename != NULL)
+    else {
+        printf("Error: no audio found.\n");
+        inf[station] = NULL;
+        // inf == NULL indicates that there is no audio
     }
     
     return 0;
@@ -211,10 +206,11 @@ int fm_mpx_get_samples(float *mpx_buffer, int station) {
                         {
                             printf("File rewound successfully.\n");
                             
-                            /* Since audio_len < length, we know the buffer is not full. We already rewound the file to its beginning,
-                               now we have to fill in the remaining empty buffer registers with the bytes at the beginning of the file
-                               until the buffer is full, then we proceed as normal. */
                             
+                            /* Since audio_len < length, we know the buffer is not full. We already rewound the file to its beginning,
+                             * now we have to fill in the remaining empty buffer registers with the bytes at the beginning of the file
+                             * until the buffer is full, then we proceed as normal.
+                             */
                             int left_to_cover = ((int) length) - ((int)audio_len[index]);
                             int register_left_off_at = ((int)audio_len[index]) - 1;
                             audio_len[index] = ((int)audio_len[index]) + sf_read_float(inf[index], &(audio_buffers[index][register_left_off_at]), left_to_cover);

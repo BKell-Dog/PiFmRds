@@ -198,6 +198,9 @@
 // (broadcast radio) and about 3.5 for NBFM (walkie-talkie style radio)
 #define DEVIATION        25.0
 
+// Max number of stations allowable
+#define MAX_STATIONS 5
+
 
 // DMA Control Block Data Structure (p40 of datasheet): 8 words (256 bits)
 typedef struct {
@@ -322,7 +325,7 @@ map_peripheral(uint32_t base, uint32_t len)
 #define SUBSIZE 1
 #define DATA_SIZE 5000
 
-int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt, float ppm, char *control_pipe) {
+int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, char *ps, char *rt, float ppm, char *control_pipe) {
     // Catch all signals possible - it is vital we kill the DMA engine
     // on process exit!
     for (int i = 0; i < 64; i++) {
@@ -458,11 +461,12 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
     int data_index = 0;
 
     // Initialize the baseband generator
-    char* filenames = {audio_file};
-    if(fm_mpx_open(filenames, DATA_SIZE, 1/* Change when developing for multiple stations */) < 0)
-    {
-        printf("Error when trying to open file(s). \n");
-        return 1;
+    for (int i = 0; i < stations; i++) {
+        if(fm_mpx_open(audio_files[i], DATA_SIZE, i) < 0)
+        {
+            printf("Error when trying to open file(s). \n");
+            return 1;
+        }
     }
 
     // By this point a data stream from the specified file has been initializerd in the fm_mpx_open function.
@@ -562,7 +566,7 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
 
 
 int main(int argc, char **argv) {
-    char *audio_file = NULL;
+    char *audio_files[MAX_STATIONS];
     char *control_pipe = NULL;
     uint32_t carrier_freq = 107900000;
     char *ps = NULL;
@@ -580,7 +584,7 @@ int main(int argc, char **argv) {
         
         if((strcmp("-wav", arg)==0 || strcmp("-audio", arg)==0) && param != NULL) {
             i++;
-            audio_file = param;
+            audio_files[0] = param;
         } else if(strcmp("-freq", arg)==0 && param != NULL) {
             i++;
             carrier_freq = 1e6 * atof(param);
@@ -608,7 +612,7 @@ int main(int argc, char **argv) {
         }
     }
     
-    int errcode = tx(carrier_freq, audio_file, pi, ps, rt, ppm, control_pipe);
+    int errcode = tx(carrier_freq, audio_files, 1 /* change later */, pi, ps, rt, ppm, control_pipe);
     
     terminate(errcode);
 }
