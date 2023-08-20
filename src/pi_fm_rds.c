@@ -136,27 +136,28 @@
 #define NUM_SAMPLES        50000
 #define NUM_CBS            (NUM_SAMPLES * 2)
 
-#define BCM2708_DMA_NO_WIDE_BURSTS    (1<<26)
-#define BCM2708_DMA_WAIT_RESP        (1<<3)
-#define BCM2708_DMA_D_DREQ        (1<<6)
-#define BCM2708_DMA_PER_MAP(x)        ((x)<<16)
-#define BCM2708_DMA_END            (1<<1)
-#define BCM2708_DMA_RESET        (1<<31)
-#define BCM2708_DMA_INT            (1<<2)
+#define BCM2708_DMA_NO_WIDE_BURSTS      (1<<26)
+#define BCM2708_DMA_WAIT_RESP           (1<<3)
+#define BCM2708_DMA_D_DREQ              (1<<6)
+#define BCM2708_DMA_PER_MAP(x)          ((x)<<16)
+#define BCM2708_DMA_END                 (1<<1)
+#define BCM2708_DMA_RESET               (1<<31)
+#define BCM2708_DMA_INT                 (1<<2)
 
 // Each DMA channel has 3 writeable registers:
-#define DMA_CS            (0x00/4)
-#define DMA_CONBLK_AD        (0x04/4)
-#define DMA_DEBUG        (0x20/4)
+#define DMA_CS                 (0x00/4)
+#define DMA_CONBLK_AD          (0x04/4)
+#define DMA_DEBUG              (0x20/4)
 
 #define DMA_BASE_OFFSET        0x00007000
-#define DMA_LEN            0x24
+#define DMA_LEN                0x24
+#define DMA_CHANNEL_1          0x100
 #define PWM_BASE_OFFSET        0x0020C000
-#define PWM_LEN            0x28
-#define CLK_BASE_OFFSET            0x00101000
-#define CLK_LEN            0xA8
-#define GPIO_BASE_OFFSET    0x00200000
-#define GPIO_LEN        0x100
+#define PWM_LEN                0x28
+#define CLK_BASE_OFFSET        0x00101000
+#define CLK_LEN                0xA8
+#define GPIO_BASE_OFFSET       0x00200000
+#define GPIO_LEN               0x100
 
 #define DMA_VIRT_BASE        (PERIPH_VIRT_BASE + DMA_BASE_OFFSET)
 #define PWM_VIRT_BASE        (PERIPH_VIRT_BASE + PWM_BASE_OFFSET)
@@ -175,16 +176,16 @@
 #define PWM_FIFO        (0x18/4)
 
 #define PWMCLK_CNTL        40
-#define PWMCLK_DIV        41
+#define PWMCLK_DIV         41
 
-#define CM_GP0DIV (0x7e101074)
+#define CM_GP0DIV       (0x7e101074)
 
 #define GPCLK_CNTL        (0x70/4)
-#define GPCLK_DIV        (0x74/4)
+#define GPCLK_DIV         (0x74/4)
 
 #define PWMCTL_MODE1        (1<<1)
 #define PWMCTL_PWEN1        (1<<0)
-#define PWMCTL_CLRF        (1<<6)
+#define PWMCTL_CLRF         (1<<6)
 #define PWMCTL_USEF1        (1<<5)
 
 #define PWMDMAC_ENAB        (1<<31)
@@ -218,9 +219,9 @@ typedef struct {
 // This struct defines and stores the data needed for a mailbox request to interface with memory
 static struct {
     int handle;            /* From mbox_open() */
-    unsigned mem_ref;    /* From mem_alloc() */
-    unsigned bus_addr;    /* From mem_lock() */
-    uint8_t *virt_addr;    /* From mapmem() */
+    unsigned mem_ref;      /* From mem_alloc() */
+    unsigned bus_addr;     /* From mem_lock()  */
+    uint8_t *virt_addr;    /* From mapmem()    */
 } mbox;
     
 
@@ -228,6 +229,7 @@ static struct {
 static volatile uint32_t *pwm_reg;
 static volatile uint32_t *clk_reg;
 static volatile uint32_t *dma_reg;
+static volatile uint32_t *dma_reg_ch1;
 static volatile uint32_t *gpio_reg;
 
 struct control_data_s {
@@ -240,6 +242,7 @@ struct control_data_s {
 #define NUM_PAGES    ((sizeof(struct control_data_s) + PAGE_SIZE - 1) >> PAGE_SHIFT)
 
 static struct control_data_s *ctl;
+static struct control_data_s *ctl1;
 
 static void
 udelay(int us)
@@ -263,6 +266,11 @@ terminate(int num)
 
     if (dma_reg && mbox.virt_addr) {
         dma_reg[DMA_CS] = BCM2708_DMA_RESET;
+        udelay(10);
+    }
+    
+    if (dma_reg_ch1 && mbox.virt_addr) {
+        dma_reg_ch1[DMA_CS] = BCM2708_DMA_RESET;
         udelay(10);
     }
     
@@ -337,6 +345,7 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
     }
         
     dma_reg = map_peripheral(DMA_VIRT_BASE, DMA_LEN);
+    dma_reg_ch1 = map_peripheral(DMA_VIRT_BASE + DMA_CHANNEL_1, DMA_LEN);
     pwm_reg = map_peripheral(PWM_VIRT_BASE, PWM_LEN);
     clk_reg = map_peripheral(CLK_VIRT_BASE, CLK_LEN);
     gpio_reg = map_peripheral(GPIO_VIRT_BASE, GPIO_LEN);
@@ -369,8 +378,11 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
     udelay(100);
     clk_reg[GPCLK_CNTL] = 0x5A << 24 | 1 << 9 | 1 << 4 | 6;
 
+    
     ctl = (struct control_data_s *) mbox.virt_addr;
+    ctl1 = (struct control_data_s *) mbox.virt_addr;
     dma_cb_t *cbp = ctl->cb;
+    dma_cb_t *cbp1 = ctl->cb;
     uint32_t phys_sample_dst = CM_GP0DIV;
     uint32_t phys_pwm_fifo_addr = PWM_PHYS_BASE + 0x18;
 
@@ -382,7 +394,7 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
 
     for (int i = 0; i < NUM_SAMPLES; i++) {
         ctl->sample[i] = 0x5a << 24 | freq_ctl;    // Silence
-        
+            
         // Set up a control block for a future DMA transfer of audio data (data will be filled in below)
         cbp->info = BCM2708_DMA_NO_WIDE_BURSTS | BCM2708_DMA_WAIT_RESP;
         cbp->src = mem_virt_to_phys(ctl->sample + i);
@@ -391,7 +403,7 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
         cbp->stride = 0;
         cbp->next = mem_virt_to_phys(cbp + 1);
         cbp++;
-        
+            
         // Set up a future control block for a delay.
         cbp->info = BCM2708_DMA_NO_WIDE_BURSTS | BCM2708_DMA_WAIT_RESP | BCM2708_DMA_D_DREQ | BCM2708_DMA_PER_MAP(5);
         cbp->src = mem_virt_to_phys(mbox.virt_addr);
@@ -403,6 +415,31 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
     }
     cbp--;
     cbp->next = mem_virt_to_phys(mbox.virt_addr); // Here we reset the 'next' val of the last cb to be the address of the first cb (mbox.virt_addr), so we make an infinite loop.
+
+    for (int i = 0; i < NUM_SAMPLES; i++) {
+        ctl1->sample[i] = 0x5a << 24 | freq_ctl;    // Silence
+            
+        // Set up a control block for a future DMA transfer of audio data (data will be filled in below)
+        cbp1->info = BCM2708_DMA_NO_WIDE_BURSTS | BCM2708_DMA_WAIT_RESP;
+        cbp1->src = mem_virt_to_phys(ctl1->sample + i);
+        cbp1->dst = phys_sample_dst;
+        cbp1->length = 4;
+        cbp1->stride = 0;
+        cbp1->next = mem_virt_to_phys(cbp + 1);
+        cbp1++;
+            
+        // Set up a future control block for a delay.
+        cbp1->info = BCM2708_DMA_NO_WIDE_BURSTS | BCM2708_DMA_WAIT_RESP | BCM2708_DMA_D_DREQ | BCM2708_DMA_PER_MAP(5);
+        cbp1->src = mem_virt_to_phys(mbox.virt_addr);
+        cbp1->dst = phys_pwm_fifo_addr;
+        cbp1->length = 4;
+        cbp1->stride = 0;
+        cbp1->next = mem_virt_to_phys(cbp1 + 1);
+        cbp1++;
+    }
+    cbp1--;
+    cbp1->next = mem_virt_to_phys(mbox.virt_addr); // Here we reset the 'next' val of the last cb to be the address of the first cb (mbox.virt_addr), so we make an infinite loop.
+
 
     // Here we define the rate at which we want to update the GPCLK control 
     // register.
@@ -452,6 +489,13 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
     dma_reg[DMA_DEBUG] = 7;                              // Clear any debug error flags
     dma_reg[DMA_CS] = 0x10880001;                        // Set DMA to begin, at mid priority, i.e. to wait for outstanding writes to complete
 
+    //Initialize DMA Channel 1
+    dma_reg_ch1[DMA_CS] = BCM2708_DMA_RESET;
+    udelay(10);
+    dma_reg_ch1[DMA_CS] = BCM2708_DMA_INT | BCM2708_DMA_END;
+    dma_reg_ch1[DMA_CONBLK_AD] = mem_virt_to_phys(ctl->cb);
+    dma_reg_ch1[DMA_DEBUG] = 7;
+    dma_reg_ch1[DMA_CS] = 0x10880001;
     
     uint32_t last_cb = (uint32_t)ctl->cb;                // Store address of the most previous control block
 
@@ -567,6 +611,7 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
 
 int main(int argc, char **argv) {
     char *audio_files[MAX_STATIONS];
+    int stations = 0;
     char *control_pipe = NULL;
     uint32_t carrier_freq = 107900000;
     char *ps = NULL;
@@ -580,11 +625,22 @@ int main(int argc, char **argv) {
         char *arg = argv[i];
         char *param = NULL;
         
-        if(arg[0] == '-' && i+1 < argc) param = argv[i+1];
+        if(arg[0] == '-' && i+1 < argc) 
+            param = argv[i+1];
         
         if((strcmp("-wav", arg)==0 || strcmp("-audio", arg)==0) && param != NULL) {
-            i++;
-            audio_files[0] = param;
+            
+            // There can be up to five audio files submitted, parse args until next tack command is found.
+            for (int j = i + 1; j < argc; j++) {
+                char *next_arg = argv[j];
+                if(next_arg == NULL || next_arg[0] == '-')
+                    break;
+                else {
+                    audio_files[stations] = next_arg;
+                    stations++;
+                    i++;
+                }
+            }
         } else if(strcmp("-freq", arg)==0 && param != NULL) {
             i++;
             carrier_freq = 1e6 * atof(param);
@@ -612,7 +668,7 @@ int main(int argc, char **argv) {
         }
     }
     
-    int errcode = tx(carrier_freq, audio_files, 1 /* change later */, pi, ps, rt, ppm, control_pipe);
+    int errcode = tx(carrier_freq, audio_files, stations, pi, ps, rt, ppm, control_pipe);
     
     terminate(errcode);
 }
