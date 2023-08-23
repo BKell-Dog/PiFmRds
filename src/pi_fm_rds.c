@@ -124,7 +124,7 @@
 #define MEM_FLAG 0x04
 #define PLLFREQ 500000000.
 #elif (RASPI)==4
-#define PERIPH_VIRT_BASE 0xfe000000
+#define PERIPH_VIRT_BASE 0xfe000000  // We use this peripheral address because we are on a BCM2711 in "Low Peripheral" mode (see doc pg. 5).
 #define PERIPH_PHYS_BASE 0x7e000000
 #define DRAM_PHYS_BASE 0xc0000000
 #define MEM_FLAG 0x04
@@ -136,6 +136,7 @@
 #define NUM_SAMPLES        50000
 #define NUM_CBS            (NUM_SAMPLES * 2)
 
+// Define Broadcom DMA flags
 #define BCM2708_DMA_NO_WIDE_BURSTS      (1<<26)
 #define BCM2708_DMA_WAIT_RESP           (1<<3)
 #define BCM2708_DMA_D_DREQ              (1<<6)
@@ -150,7 +151,7 @@
 #define DMA_DEBUG              (0x20/4)
 
 #define DMA_BASE_OFFSET        0x00007000
-#define DMA_LEN                0x24
+#define DMA_LEN                0x84
 #define DMA_CHANNEL_1          0x100
 #define PWM_BASE_OFFSET        0x0020C000
 #define PWM_LEN                0x28
@@ -162,26 +163,33 @@
 #define DMA_VIRT_BASE        (PERIPH_VIRT_BASE + DMA_BASE_OFFSET)
 #define PWM_VIRT_BASE        (PERIPH_VIRT_BASE + PWM_BASE_OFFSET)
 #define CLK_VIRT_BASE        (PERIPH_VIRT_BASE + CLK_BASE_OFFSET)
-#define GPIO_VIRT_BASE        (PERIPH_VIRT_BASE + GPIO_BASE_OFFSET)
+#define GPIO_VIRT_BASE       (PERIPH_VIRT_BASE + GPIO_BASE_OFFSET)
 #define PCM_VIRT_BASE        (PERIPH_VIRT_BASE + PCM_BASE_OFFSET)
 
 #define PWM_PHYS_BASE        (PERIPH_PHYS_BASE + PWM_BASE_OFFSET)
 #define PCM_PHYS_BASE        (PERIPH_PHYS_BASE + PCM_BASE_OFFSET)
-#define GPIO_PHYS_BASE        (PERIPH_PHYS_BASE + GPIO_BASE_OFFSET)
+#define GPIO_PHYS_BASE       (PERIPH_PHYS_BASE + GPIO_BASE_OFFSET)
 
 
-#define PWM_CTL            (0x00/4)
-#define PWM_DMAC        (0x08/4)
-#define PWM_RNG1        (0x10/4)
-#define PWM_FIFO        (0x18/4)
+#define PWM_CTL              (0x00/4)
+#define PWM_DMAC             (0x08/4)
+#define PWM_RNG1             (0x10/4)
+#define PWM_FIFO             (0x18/4)
 
-#define PWMCLK_CNTL        40
-#define PWMCLK_DIV         41
+#define PWMCLK_CNTL          40
+#define PWMCLK_DIV           41
 
-#define CM_GP0DIV       (0x7e101074)
+// Variables for control of general purpose clock (GPCLK) on GPIO pins
+// See BCM2711 Documentation 5.4.2
+#define CM_GP0CTL           (0x7e101070)
+#define CM_GP0DIV           (0x7e101074)
+#define CM_GP1CTL           (0x7e101078)
+#define CM_GP1DIV           (0x7e10107c)
+#define CM_GP2CTL           (0x7e101080)
+#define CM_GP2DIV           (0x7e101084)
 
-#define GPCLK_CNTL        (0x70/4)
-#define GPCLK_DIV         (0x74/4)
+#define GPCLK_CNTL          (0x70/4)
+#define GPCLK_DIV           (0x74/4)
 
 #define PWMCTL_MODE1        (1<<1)
 #define PWMCTL_PWEN1        (1<<0)
@@ -191,9 +199,9 @@
 #define PWMDMAC_ENAB        (1<<31)
 // I think this means it requests as soon as there is one free slot in the FIFO
 // which is what we want as burst DMA would mess up our timing.
-#define PWMDMAC_THRSHLD        ((15<<8)|(15<<0))
+#define PWMDMAC_THRSHLD     ((15<<8)|(15<<0))
 
-#define GPFSEL0            (0x00/4)
+#define GPFSEL0             (0x00/4)
 
 // The deviation specifies how wide the signal is. Use 25.0 for WBFM
 // (broadcast radio) and about 3.5 for NBFM (walkie-talkie style radio)
@@ -321,9 +329,14 @@ map_peripheral(uint32_t base, uint32_t len)
 
     if (fd < 0)
         fatal("Failed to open /dev/mem: %m.\n");
+        
     vaddr = mmap(NULL, len, PROT_READ|PROT_WRITE, MAP_SHARED, fd, base);
-    if (vaddr == MAP_FAILED)
+    
+    if (vaddr == MAP_FAILED){
+        printf("Error Number: %d.\n", errno);
+        printf("Error Message: %s.\n", strerror(errno));
         fatal("Failed to map peripheral at 0x%08x: %m.\n", base);
+    }
     close(fd);
 
     return vaddr;
@@ -334,6 +347,7 @@ map_peripheral(uint32_t base, uint32_t len)
 #define DATA_SIZE 5000
 
 int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, char *ps, char *rt, float ppm, char *control_pipe) {
+    
     // Catch all signals possible - it is vital we kill the DMA engine
     // on process exit!
     for (int i = 0; i < 64; i++) {
@@ -343,12 +357,16 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
         sa.sa_handler = terminate;
         sigaction(i, &sa, NULL);
     }
-        
+    
+    // Map peripheral registers to variables    
     dma_reg = map_peripheral(DMA_VIRT_BASE, DMA_LEN);
-    dma_reg_ch1 = map_peripheral(DMA_VIRT_BASE + DMA_CHANNEL_1, DMA_LEN);
     pwm_reg = map_peripheral(PWM_VIRT_BASE, PWM_LEN);
     clk_reg = map_peripheral(CLK_VIRT_BASE, CLK_LEN);
     gpio_reg = map_peripheral(GPIO_VIRT_BASE, GPIO_LEN);
+    
+    // DMA channel 0 begins at 0xfe007000, channel 1 at 0xfe007100. Since the first address is 
+    // already mapped, we can access the location 100 registers down from DMA base to access channel 1.
+    dma_reg_ch1 = &dma_reg[100];
 
     // Use the mailbox interface to the VC to ask for physical memory.
     mbox.handle = mbox_open();
@@ -369,10 +387,11 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
     }
     printf("virt_addr = %p\n", mbox.virt_addr);
     
-
-    // GPIO4 needs to be ALT FUNC 0 to output the clock
-    gpio_reg[GPFSEL0] = (gpio_reg[GPFSEL0] & ~(7 << 12)) | (4 << 12);
-
+    
+    // See Note 1 below for GPIO explained
+    gpio_reg[GPFSEL0] = (gpio_reg[GPFSEL0] & ~(7 << 12)) | (4 << 12); // GPIO4 needs to be ALT FUNC 0 to output the clock GPCLK0
+    gpio_reg[GPFSEL0] = (gpio_reg[GPFSEL0] & ~(7 << 15)) | (4 << 15); // GPIO5 needs to be ALT FUNC 0 to output GPCLK1
+ 
     // Program GPCLK to use MASH setting 1, so fractional dividers work
     clk_reg[GPCLK_CNTL] = 0x5A << 24 | 6;
     udelay(100);
@@ -384,6 +403,7 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
     dma_cb_t *cbp = ctl->cb;
     dma_cb_t *cbp1 = ctl->cb;
     uint32_t phys_sample_dst = CM_GP0DIV;
+    uint32_t phys_sample_dst_ch1 = CM_GP1DIV;
     uint32_t phys_pwm_fifo_addr = PWM_PHYS_BASE + 0x18;
 
     
@@ -393,6 +413,8 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
 
 
     for (int i = 0; i < NUM_SAMPLES; i++) {
+        
+        //----------------------------------Channel 0-------------------------------------
         ctl->sample[i] = 0x5a << 24 | freq_ctl;    // Silence
             
         // Set up a control block for a future DMA transfer of audio data (data will be filled in below)
@@ -412,17 +434,14 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
         cbp->stride = 0;
         cbp->next = mem_virt_to_phys(cbp + 1);
         cbp++;
-    }
-    cbp--;
-    cbp->next = mem_virt_to_phys(mbox.virt_addr); // Here we reset the 'next' val of the last cb to be the address of the first cb (mbox.virt_addr), so we make an infinite loop.
-
-    for (int i = 0; i < NUM_SAMPLES; i++) {
+        
+        //---------------------------------Channel 1----------------------------------------
         ctl1->sample[i] = 0x5a << 24 | freq_ctl;    // Silence
             
         // Set up a control block for a future DMA transfer of audio data (data will be filled in below)
         cbp1->info = BCM2708_DMA_NO_WIDE_BURSTS | BCM2708_DMA_WAIT_RESP;
         cbp1->src = mem_virt_to_phys(ctl1->sample + i);
-        cbp1->dst = phys_sample_dst;
+        cbp1->dst = phys_sample_dst_ch1;
         cbp1->length = 4;
         cbp1->stride = 0;
         cbp1->next = mem_virt_to_phys(cbp + 1);
@@ -437,8 +456,10 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
         cbp1->next = mem_virt_to_phys(cbp1 + 1);
         cbp1++;
     }
+    cbp--;
+    cbp->next = mem_virt_to_phys(mbox.virt_addr); // Here we reset the 'next' val of the last cb to be the address of the first cb (mbox.virt_addr), so we make an infinite loop.
     cbp1--;
-    cbp1->next = mem_virt_to_phys(mbox.virt_addr); // Here we reset the 'next' val of the last cb to be the address of the first cb (mbox.virt_addr), so we make an infinite loop.
+    cbp1->next = mem_virt_to_phys(mbox.virt_addr);
 
 
     // Here we define the rate at which we want to update the GPCLK control 
@@ -672,3 +693,31 @@ int main(int argc, char **argv) {
     
     terminate(errcode);
 }
+
+
+
+/* Note 1: On GPIO pin assignments
+ * 
+ * The documentation in the BCM2711 manual seems convoluted, and assigning a function to a GPIO pin may
+ * seem esoteric at first. You'll see on page 77 (sec 5.3) that each GPIO can have up to six alternate
+ * functions. We want to set it to ALT0 in our cases, i.e. the GPCLK. You'll also see on page 66 (sec 
+ * 5.2) a list of registers with offsets which control the GPIO pin in question, and that there are six
+ * options at the top, GPFSEL0 ... GPFSEL5. These are 32-bit wide slots in which each trio of bits
+ * represents a pin function. Since there are 58 pins, and each pin has 6 possible functions, we need
+ * three bits (2^3 = 8 [six functions + input and output]) to represent all functions. So in total we
+ * need 58 * 3 = 174 bits to fully represent all the GPIO pins and functions. Each GPFSEL is 32 bits long,
+ * so we need six registers to hold all bit trios (174 / 32 = 5.4375 -> 6 registers). If we wanted to 
+ * assign GPIO 11 to its first function (FUNC 0), we would write the bits 100 or 0x04 (see doc pg 67) to
+ * registers 5:3 at GPIO_BASE + GPFSEL1 = 0x7e200004. So in reality we would have to create a bitmask
+ * for whatever is already there and add out assignment to it, as such.
+ *       
+ *      For example, GPFSEL1 contains   11 100 010 110 110 010 000 100 100 010 101
+ *      Bitmask:                        11 111 111 111 111 111 111 111 111 000 111
+ *                                                                      [GPIO 11]
+ *      Bitmask & GPFSEL1:              11 100 010 110 110 010 000 100 100 000 101
+ *      Desired function:                                                  100 000
+ *      (Bitmask & GPFSEL1) | Desired:  11 100 010 110 110 010 000 100 100 100 101
+ * 
+ * Thus we have inserted out desired data for GPIO 11 without disturbing any other data, and can write
+ * back to GPIO_BASE + GPFSEL1 as a 32 bit whole.
+*/
