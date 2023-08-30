@@ -136,29 +136,47 @@
 #define NUM_SAMPLES        50000
 #define NUM_CBS            (NUM_SAMPLES * 2)
 
+// 15 DMA channels are usable on the RPi (0..14)
+#define DMA_CHANNELS    15
+
 // Define Broadcom DMA flags
-#define BCM2708_DMA_NO_WIDE_BURSTS      (1<<26)
-#define BCM2708_DMA_WAIT_RESP           (1<<3)
-#define BCM2708_DMA_D_DREQ              (1<<6)
-#define BCM2708_DMA_PER_MAP(x)          ((x)<<16)
-#define BCM2708_DMA_END                 (1<<1)
-#define BCM2708_DMA_RESET               (1<<31)
-#define BCM2708_DMA_INT                 (1<<2)
+#define BCM2711_DMA_NO_WIDE_BURSTS      (1<<26)
+#define BCM2711_DMA_WAIT_RESP           (1<<3)
+#define BCM2711_DMA_D_DREQ              (1<<6)
+#define BCM2711_DMA_PER_MAP(x)          ((x)<<16)
+#define BCM2711_DMA_END                 (1<<1)
+#define BCM2711_DMA_RESET               (1<<31)
+#define BCM2711_DMA_INT                 (1<<2)
 
-// Each DMA channel has 3 writeable registers:
-#define DMA_CS                 (0x00/4)
-#define DMA_CONBLK_AD          (0x04/4)
-#define DMA_DEBUG              (0x20/4)
-
+// Memory Addresses
 #define DMA_BASE_OFFSET        0x00007000
 #define DMA_LEN                0x84
-#define DMA_CHANNEL_1          0x100
+#define DMA_CHANNEL_INC        0x100
 #define PWM_BASE_OFFSET        0x0020C000
 #define PWM_LEN                0x28
 #define CLK_BASE_OFFSET        0x00101000
 #define CLK_LEN                0xA8
 #define GPIO_BASE_OFFSET       0x00200000
 #define GPIO_LEN               0x100
+
+// Each DMA channel has 3 writeable registers:
+#define DMA_CS                 (0x00/4)
+#define DMA_CONBLK_AD          (0x04/4)
+#define DMA_DEBUG              (0x20/4)
+
+// GPIO Memory Addresses
+#define GPIO_FSEL0      (0x00/4)
+#define GPIO_SET0       (0x1c/4)
+#define GPIO_CLR0       (0x28/4)
+#define GPIO_LEV0       (0x34/4)
+#define GPIO_PULLEN     (0x94/4)
+#define GPIO_PULLCLK    (0x98/4)
+
+// PWM Memory Addresses
+#define PWM_CTL         (0x00/4)
+#define PWM_DMAC        (0x08/4)
+#define PWM_RNG1        (0x10/4)
+#define PWM_FIFO        (0x18/4)
 
 #define DMA_VIRT_BASE        (PERIPH_VIRT_BASE + DMA_BASE_OFFSET)
 #define PWM_VIRT_BASE        (PERIPH_VIRT_BASE + PWM_BASE_OFFSET)
@@ -169,7 +187,6 @@
 #define PWM_PHYS_BASE        (PERIPH_PHYS_BASE + PWM_BASE_OFFSET)
 #define PCM_PHYS_BASE        (PERIPH_PHYS_BASE + PCM_BASE_OFFSET)
 #define GPIO_PHYS_BASE       (PERIPH_PHYS_BASE + GPIO_BASE_OFFSET)
-
 
 #define PWM_CTL              (0x00/4)
 #define PWM_DMAC             (0x08/4)
@@ -188,8 +205,12 @@
 #define CM_GP2CTL           (0x7e101080)
 #define CM_GP2DIV           (0x7e101084)
 
-#define GPCLK_CNTL          (0x70/4)
-#define GPCLK_DIV           (0x74/4)
+#define GPCLK0_CNTL         (0x70/4)
+#define GPCLK0_DIV          (0x74/4)
+#define GPCLK1_CNTL         (0x78/4)
+#define GPCLK1_DIV          (0x7c/4)
+#define GPCLK2_CNTL         (0x80/4)
+#define GPCLK2_DIV          (0x84/4) 
 
 #define PWMCTL_MODE1        (1<<1)
 #define PWMCTL_PWEN1        (1<<0)
@@ -202,6 +223,7 @@
 #define PWMDMAC_THRSHLD     ((15<<8)|(15<<0))
 
 #define GPFSEL0             (0x00/4)
+#define GPFSEL1             (0x04/4)
 
 // The deviation specifies how wide the signal is. Use 25.0 for WBFM
 // (broadcast radio) and about 3.5 for NBFM (walkie-talkie style radio)
@@ -209,6 +231,8 @@
 
 // Max number of stations allowable
 #define MAX_STATIONS 5
+
+#define BUS_TO_PHYS(x) ((x)&~0xC0000000)
 
 
 // DMA Control Block Data Structure (p40 of datasheet): 8 words (256 bits)
@@ -222,7 +246,30 @@ typedef struct {
     uint32_t pad[2]; // _reserved_
 } dma_cb_t;
 
-#define BUS_TO_PHYS(x) ((x)&~0xC0000000)
+
+// Main control structure per channel, used for multiple DMA channels
+struct channel {
+    uint8_t *virtbase;
+    uint32_t *sample;
+    dma_cb_t *cb;
+    page_map_t *page_map;
+    volatile uint32_t *dma_reg;
+
+    // Set by user
+    uint32_t subcycle_time_us;
+
+    // Set by system
+    uint32_t num_samples;
+    uint32_t num_cbs;
+    uint32_t num_pages;
+
+    // Used only for control purposes
+    uint32_t width_max;
+};
+
+// One control structure per channel
+static struct channel channels[DMA_CHANNELS];
+
 
 // This struct defines and stores the data needed for a mailbox request to interface with memory
 static struct {
@@ -231,8 +278,6 @@ static struct {
     unsigned bus_addr;     /* From mem_lock()  */
     uint8_t *virt_addr;    /* From mapmem()    */
 } mbox;
-    
-
 
 static volatile uint32_t *pwm_reg;
 static volatile uint32_t *clk_reg;
@@ -252,6 +297,7 @@ struct control_data_s {
 static struct control_data_s *ctl;
 static struct control_data_s *ctl1;
 
+// Very short delay as demanded per datasheet
 static void
 udelay(int us)
 {
@@ -260,6 +306,7 @@ udelay(int us)
     nanosleep(&ts, NULL);
 }
 
+// Terminate is triggered by signals
 static void
 terminate(int num)
 {
@@ -269,16 +316,16 @@ terminate(int num)
         gpio_reg[GPFSEL0] = (gpio_reg[GPFSEL0] & ~(7 << 12)) | (1 << 12);
 
         // Disable the clock generator.
-        clk_reg[GPCLK_CNTL] = 0x5A;
+        clk_reg[GPCLK0_CNTL] = 0x5A;
     }
 
     if (dma_reg && mbox.virt_addr) {
-        dma_reg[DMA_CS] = BCM2708_DMA_RESET;
+        dma_reg[DMA_CS] = BCM2711_DMA_RESET;
         udelay(10);
     }
     
     if (dma_reg_ch1 && mbox.virt_addr) {
-        dma_reg_ch1[DMA_CS] = BCM2708_DMA_RESET;
+        dma_reg_ch1[DMA_CS] = BCM2711_DMA_RESET;
         udelay(10);
     }
     
@@ -296,6 +343,9 @@ terminate(int num)
     exit(num);
 }
 
+// Shutdown with an error message. Returns EXIT_FAILURE for convenience.
+// if soft_fatal is set to 1, a call to `fatal(..)` will not shut down
+// PWM/DMA activity (used in the Python wrapper).
 static void
 fatal(char *fmt, ...)
 {
@@ -307,6 +357,7 @@ fatal(char *fmt, ...)
     terminate(0);
 }
 
+// Memory mapping
 static uint32_t
 mem_virt_to_phys(void *virt)
 {
@@ -321,6 +372,7 @@ mem_phys_to_virt(uint32_t phys)
     return phys - (uint32_t)mbox.bus_addr + (uint32_t)mbox.virt_addr;
 }
 
+// Peripherals memory mapping
 static void *
 map_peripheral(uint32_t base, uint32_t len)
 {
@@ -342,6 +394,44 @@ map_peripheral(uint32_t base, uint32_t len)
     return vaddr;
 }
 
+// Returns a pointer to the control block of this channel in DMA memory
+uint8_t*
+get_cb(int channel)
+{
+    return channels[channel].virtbase + (sizeof(uint32_t) * channels[channel].num_samples);
+}
+
+// Reset this channel to original state (all samples=0, all cbs=clr0)
+int
+clear_channel(int channel)
+{
+    int i;
+    uint32_t phys_gpclr0 = 0x7e200000 + 0x28;
+    dma_cb_t *cbp = (dma_cb_t *) get_cb(channel);
+    uint32_t *dp = (uint32_t *) channels[channel].virtbase;
+
+    log_debug("clear_channel: channel=%d\n", channel);
+    if (!channels[channel].virtbase)
+        return fatal("Error: channel %d has not been initialized with 'init_channel(..)'\n", channel);
+
+    // First we have to stop all currently enabled pulses
+    for (i = 0; i < channels[channel].num_samples; i++) {
+        cbp->dst = phys_gpclr0;
+        cbp += 2;
+    }
+
+    // Let DMA do one cycle to actually clear them
+    udelay(channels[channel].subcycle_time_us);
+
+    // Finally set all samples to 0 (instead of gpio_mask)
+    for (i = 0; i < channels[channel].num_samples; i++) {
+        *(dp + i) = 0;
+    }
+
+    return EXIT_SUCCESS;
+}
+
+
 
 #define SUBSIZE 1
 #define DATA_SIZE 5000
@@ -357,23 +447,13 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
         sa.sa_handler = terminate;
         sigaction(i, &sa, NULL);
     }
-    
-    // Map peripheral registers to variables    
-    dma_reg = map_peripheral(DMA_VIRT_BASE, DMA_LEN);
-    pwm_reg = map_peripheral(PWM_VIRT_BASE, PWM_LEN);
-    clk_reg = map_peripheral(CLK_VIRT_BASE, CLK_LEN);
-    gpio_reg = map_peripheral(GPIO_VIRT_BASE, GPIO_LEN);
-    
-    // DMA channel 0 begins at 0xfe007000, channel 1 at 0xfe007100. Since the first address is 
-    // already mapped, we can access the location 100 registers down from DMA base to access channel 1.
-    dma_reg_ch1 = &dma_reg[100];
 
     // Use the mailbox interface to the VC to ask for physical memory.
     mbox.handle = mbox_open();
     if (mbox.handle < 0)
-        fatal("Failed to open mailbox. Check kernel support for vcio / BCM2708 mailbox.\n");
-    printf("Allocating physical memory: size = %d     ", NUM_PAGES * 4096);
-    if(! (mbox.mem_ref = mem_alloc(mbox.handle, NUM_PAGES * 4096, 4096, MEM_FLAG))) {
+        fatal("Failed to open mailbox. Check kernel support for vcio / BCM2711 mailbox.\n");
+    printf("Allocating physical memory: size = %d     ", stations * NUM_PAGES * 4096);
+    if(! (mbox.mem_ref = mem_alloc(mbox.handle, stations * NUM_PAGES * 4096, 4096, MEM_FLAG))) { // We multiply by var "stations" to increase memory size
         fatal("Could not allocate memory.\n");
     }
     // TODO: How do we know that succeeded?
@@ -382,7 +462,7 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
         fatal("Could not lock memory.\n");
     }
     printf("bus_addr = %x     ", mbox.bus_addr);
-    if(! (mbox.virt_addr = mapmem(BUS_TO_PHYS(mbox.bus_addr), NUM_PAGES * 4096))) {
+    if(! (mbox.virt_addr = mapmem(BUS_TO_PHYS(mbox.bus_addr), stations * NUM_PAGES * 4096))) {
         fatal("Could not map memory.\n");
     }
     printf("virt_addr = %p\n", mbox.virt_addr);
@@ -390,16 +470,20 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
     
     // See Note 1 below for GPIO explained
     gpio_reg[GPFSEL0] = (gpio_reg[GPFSEL0] & ~(7 << 12)) | (4 << 12); // GPIO4 needs to be ALT FUNC 0 to output the clock GPCLK0
-    gpio_reg[GPFSEL0] = (gpio_reg[GPFSEL0] & ~(7 << 15)) | (4 << 15); // GPIO5 needs to be ALT FUNC 0 to output GPCLK1
+    gpio_reg[GPFSEL1] = (gpio_reg[GPFSEL1] & ~(7 << 15)) | (4 << 15); // GPIO5 needs to be ALT FUNC 0 to output GPCLK1
  
-    // Program GPCLK to use MASH setting 1, so fractional dividers work
-    clk_reg[GPCLK_CNTL] = 0x5A << 24 | 6;
+    // Program GPCLK0 and GPCLK1 to use MASH setting 1, so fractional dividers work
+    // 0x5A is CLK password, 6 specifies PLLD as CLK source, 1 << 9 sets MASH to mode 1, 1 << 4 sets enable. 
+    clk_reg[GPCLK0_CNTL] = 0x5A << 24 | 6;
     udelay(100);
-    clk_reg[GPCLK_CNTL] = 0x5A << 24 | 1 << 9 | 1 << 4 | 6;
+    clk_reg[GPCLK0_CNTL] = 0x5A << 24 | 1 << 9 | 1 << 4 | 6;
+    clk_reg[GPCLK1_CNTL] = 0x5A << 24 | 6;
+    udelay(100);
+    clk_reg[GPCLK1_CNTL] = 0x5A << 24 | 1 << 9 | 1 << 4 | 6;
 
     
     ctl = (struct control_data_s *) mbox.virt_addr;
-    ctl1 = (struct control_data_s *) mbox.virt_addr;
+    ctl1 = (struct control_data_s *) mbox.virt_addr + sizeof(ctl);
     dma_cb_t *cbp = ctl->cb;
     dma_cb_t *cbp1 = ctl->cb;
     uint32_t phys_sample_dst = CM_GP0DIV;
@@ -418,7 +502,7 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
         ctl->sample[i] = 0x5a << 24 | freq_ctl;    // Silence
             
         // Set up a control block for a future DMA transfer of audio data (data will be filled in below)
-        cbp->info = BCM2708_DMA_NO_WIDE_BURSTS | BCM2708_DMA_WAIT_RESP;
+        cbp->info = BCM2711_DMA_NO_WIDE_BURSTS | BCM2711_DMA_WAIT_RESP;
         cbp->src = mem_virt_to_phys(ctl->sample + i);
         cbp->dst = phys_sample_dst;
         cbp->length = 4;
@@ -427,7 +511,7 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
         cbp++;
             
         // Set up a future control block for a delay.
-        cbp->info = BCM2708_DMA_NO_WIDE_BURSTS | BCM2708_DMA_WAIT_RESP | BCM2708_DMA_D_DREQ | BCM2708_DMA_PER_MAP(5);
+        cbp->info = BCM2711_DMA_NO_WIDE_BURSTS | BCM2711_DMA_WAIT_RESP | BCM2711_DMA_D_DREQ | BCM2711_DMA_PER_MAP(5);
         cbp->src = mem_virt_to_phys(mbox.virt_addr);
         cbp->dst = phys_pwm_fifo_addr;
         cbp->length = 4;
@@ -439,7 +523,7 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
         ctl1->sample[i] = 0x5a << 24 | freq_ctl;    // Silence
             
         // Set up a control block for a future DMA transfer of audio data (data will be filled in below)
-        cbp1->info = BCM2708_DMA_NO_WIDE_BURSTS | BCM2708_DMA_WAIT_RESP;
+        cbp1->info = BCM2711_DMA_NO_WIDE_BURSTS | BCM2711_DMA_WAIT_RESP;
         cbp1->src = mem_virt_to_phys(ctl1->sample + i);
         cbp1->dst = phys_sample_dst_ch1;
         cbp1->length = 4;
@@ -448,7 +532,7 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
         cbp1++;
             
         // Set up a future control block for a delay.
-        cbp1->info = BCM2708_DMA_NO_WIDE_BURSTS | BCM2708_DMA_WAIT_RESP | BCM2708_DMA_D_DREQ | BCM2708_DMA_PER_MAP(5);
+        cbp1->info = BCM2711_DMA_NO_WIDE_BURSTS | BCM2711_DMA_WAIT_RESP | BCM2711_DMA_D_DREQ | BCM2711_DMA_PER_MAP(5);
         cbp1->src = mem_virt_to_phys(mbox.virt_addr);
         cbp1->dst = phys_pwm_fifo_addr;
         cbp1->length = 4;
@@ -459,61 +543,12 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
     cbp--;
     cbp->next = mem_virt_to_phys(mbox.virt_addr); // Here we reset the 'next' val of the last cb to be the address of the first cb (mbox.virt_addr), so we make an infinite loop.
     cbp1--;
-    cbp1->next = mem_virt_to_phys(mbox.virt_addr);
-
-
-    // Here we define the rate at which we want to update the GPCLK control 
-    // register.
-    //
-    // Set the range to 2 bits. PLLD is at 500 MHz, therefore to get 228 kHz
-    // we need a divisor of 500000000 / 2000 / 228 = 1096.491228
-    //
-    // This is 1096 + 2012*2^-12 theoretically
-    //
-    // However the fractional part may have to be adjusted to take the actual
-    // frequency of your Pi's oscillator into account. For example on my Pi,
-    // the fractional part should be 1916 instead of 2012 to get exactly 
-    // 228 kHz. However RDS decoding is still okay even at 2012.
-    //
-    // So we use the 'ppm' parameter to compensate for the oscillator error
-
-    float divider = (PLLFREQ/(2000*228*(1.+ppm/1.e6)));
-    uint32_t idivider = (uint32_t) divider;
-    uint32_t fdivider = (uint32_t) ((divider - idivider)*pow(2, 12));
-    
-    printf("ppm corr is %.4f, divider is %.4f (%d + %d*2^-12) [nominal 1096.4912].\n", 
-                ppm, divider, idivider, fdivider);
-
-    pwm_reg[PWM_CTL] = 0;                 // Disable PWM Module
-    udelay(10);
-    clk_reg[PWMCLK_CNTL] = 0x5A000006;    // Set clock source to PLLD and siable clock
-    udelay(100);
-    clk_reg[PWMCLK_DIV] = 0x5A000000 | (idivider<<12) | fdivider; // Set clock divisor and therefore frequency; theorically div = 1096 + 2012*2^-12
-    udelay(100);
-    clk_reg[PWMCLK_CNTL] = 0x5A000216;    // Set clock source to PLLD and enable + apply a MASH filter of 1
-    udelay(100);
-    pwm_reg[PWM_RNG1] = 2;                // Set PWM range register to 2, which determines PWM frequency.
-    udelay(10);
-    pwm_reg[PWM_DMAC] = PWMDMAC_ENAB | PWMDMAC_THRSHLD; // Set DMA enabled and set DMA request threshold.
-    udelay(10);
-    pwm_reg[PWM_CTL] = PWMCTL_CLRF;       // Clear PWM control register
-    udelay(10);
-    pwm_reg[PWM_CTL] = PWMCTL_USEF1 | PWMCTL_PWEN1; // Set PWM control register to use FIFO mode 1 and enable PWM channel 1.
-    udelay(10);
-    
-
-    // Initialise the DMA
-    dma_reg[DMA_CS] = BCM2708_DMA_RESET;                 // Reset DMA control and status (CS) register
-    udelay(10);
-    dma_reg[DMA_CS] = BCM2708_DMA_INT | BCM2708_DMA_END; // Set DMA CS register to enable interrupts and end-of-transfer detection
-    dma_reg[DMA_CONBLK_AD] = mem_virt_to_phys(ctl->cb);  // Set address for control block (in physical mem, not virtual)
-    dma_reg[DMA_DEBUG] = 7;                              // Clear any debug error flags
-    dma_reg[DMA_CS] = 0x10880001;                        // Set DMA to begin, at mid priority, i.e. to wait for outstanding writes to complete
+    cbp1->next = mem_virt_to_phys(mbox.virt_addr);   
 
     //Initialize DMA Channel 1
-    dma_reg_ch1[DMA_CS] = BCM2708_DMA_RESET;
+    dma_reg_ch1[DMA_CS] = BCM2711_DMA_RESET;
     udelay(10);
-    dma_reg_ch1[DMA_CS] = BCM2708_DMA_INT | BCM2708_DMA_END;
+    dma_reg_ch1[DMA_CS] = BCM2711_DMA_INT | BCM2711_DMA_END;
     dma_reg_ch1[DMA_CONBLK_AD] = mem_virt_to_phys(ctl->cb);
     dma_reg_ch1[DMA_DEBUG] = 7;
     dma_reg_ch1[DMA_CS] = 0x10880001;
@@ -629,6 +664,122 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, uint16_t pi, ch
     return 0;
 }
 
+// Setup a channel with a specific subcycle time. After that pulse-widths can be
+// added at any time.
+int
+init_channel(int channel, int subcycle_time_us)
+{
+    log_debug("Initializing channel %d...\n", channel);
+    if (_is_setup == 0)
+        return fatal("Error: you need to call `setup(..)` before initializing channels\n");
+    if (channel > DMA_CHANNELS-1)
+        return fatal("Error: maximum channel is %d (requested channel %d)\n", DMA_CHANNELS-1, channel);
+    if (channels[channel].virtbase)
+        return fatal("Error: channel %d already initialized.\n", channel);
+    if (subcycle_time_us < SUBCYCLE_TIME_US_MIN)
+        return fatal("Error: subcycle time %dus is too small (min=%dus)\n", subcycle_time_us, SUBCYCLE_TIME_US_MIN);
+
+    // Setup Data
+    channels[channel].subcycle_time_us = subcycle_time_us;
+    channels[channel].num_samples = channels[channel].subcycle_time_us / pulse_width_incr_us;
+    channels[channel].width_max = channels[channel].num_samples - 1;
+    channels[channel].num_cbs = channels[channel].num_samples * 2;
+    channels[channel].num_pages = ((channels[channel].num_cbs * 32 + channels[channel].num_samples * 4 + \
+                                       PAGE_SIZE - 1) >> PAGE_SHIFT);
+
+    // Initialize channel
+    if (init_virtbase(channel) == EXIT_FAILURE)
+        return EXIT_FAILURE;
+    if (make_pagemap(channel) == EXIT_FAILURE)
+        return EXIT_FAILURE;
+    if (init_ctrl_data(channel) == EXIT_FAILURE)
+        return EXIT_FAILURE;
+    return EXIT_SUCCESS;
+}
+
+
+// Initialize PWM or PCM hardware once for all channels (10MHz)
+static void
+init_hardware()
+{
+    // Here we define the rate at which we want to update the GPCLK control 
+    // register.
+    //
+    // Set the range to 2 bits. PLLD is at 500 MHz, therefore to get 228 kHz
+    // we need a divisor of 500000000 / 2000 / 228 = 1096.491228
+    //
+    // This is 1096 + 2012*2^-12 theoretically
+    //
+    // However the fractional part may have to be adjusted to take the actual
+    // frequency of your Pi's oscillator into account. For example on my Pi,
+    // the fractional part should be 1916 instead of 2012 to get exactly 
+    // 228 kHz. However RDS decoding is still okay even at 2012.
+    //
+    // So we use the 'ppm' parameter to compensate for the oscillator error
+    float divider = (PLLFREQ/(2000*228*(1.+ppm/1.e6)));
+    uint32_t idivider = (uint32_t) divider;
+    uint32_t fdivider = (uint32_t) ((divider - idivider)*pow(2, 12));
+    printf("ppm corr is %.4f, divider is %.4f (%d + %d*2^-12) [nominal 1096.4912].\n", ppm, divider, idivider, fdivider);
+    
+    // Initialise PWM
+    pwm_reg[PWM_CTL] = 0;                           // Disable PWM Module
+    udelay(10);
+    clk_reg[PWMCLK_CNTL] = 0x5A000006;              // Source = PLLD (500MHz)
+    udelay(100);
+    clk_reg[PWMCLK_DIV] = 0x5A000000 | (idivider<<12) | fdivider;    // set PWM div to give 228 kHz
+    udelay(100);
+    clk_reg[PWMCLK_CNTL] = 0x5A000016;              // Set clock source to PLLD and enable + apply a MASH filter of 1
+    udelay(100);
+    pwm_reg[PWM_RNG1] = 2;                          // Set PWM range register to 2, which determines PWM frequency.
+    udelay(10);
+    pwm_reg[PWM_DMAC] = PWMDMAC_ENAB | PWMDMAC_THRSHLD; // Set DMA enabled and set DMA request threshold.
+    udelay(10);
+    pwm_reg[PWM_CTL] = PWMCTL_CLRF;                 // Clear PWM control register
+    udelay(10);
+    pwm_reg[PWM_CTL] = PWMCTL_USEF1 | PWMCTL_PWEN1; // Set PWM control register to use FIFO mode 1 and enable PWM channel 1.
+    udelay(10);
+    
+    // Initialise the DMA
+    dma_reg[DMA_CS] = BCM2711_DMA_RESET;                 // Reset DMA control and status (CS) register
+    udelay(10);
+    dma_reg[DMA_CS] = BCM2711_DMA_INT | BCM2711_DMA_END; // Set DMA CS register to enable interrupts and end-of-transfer detection
+    dma_reg[DMA_CONBLK_AD] = mem_virt_to_phys(ctl->cb);  // Set address for control block (in physical mem, not virtual)
+    dma_reg[DMA_DEBUG] = 7;                              // Clear any debug error flags
+    dma_reg[DMA_CS] = 0x10880001;                        // Set DMA to begin, at mid priority, i.e. to wait for outstanding writes to complete
+}
+
+
+// setup(..) needs to be called once and starts the PWM timer. delay hardware
+// and pulse-width-increment-granularity is set for all DMA channels and cannot
+// be changed during runtime due to hardware mechanics (specific PWM timing).
+int
+setup(void)
+{
+    if (_is_setup == 1)
+        return fatal("Error: setup(..) has already been called before\n");
+
+    // Catch all kind of kill signals
+    setup_sighandlers();
+
+    // Initialize common stuff
+    dma_reg = map_peripheral(DMA_VIRT_BASE, DMA_LEN);
+    pwm_reg = map_peripheral(PWM_VIRT_BASE, PWM_LEN);
+    clk_reg = map_peripheral(CLK_VIRT_BASE, CLK_LEN);
+    gpio_reg = map_peripheral(GPIO_VIRT_BASE, GPIO_LEN);
+    if (pwm_reg == NULL || pcm_reg == NULL || clk_reg == NULL || gpio_reg == NULL)
+        return EXIT_FAILURE;
+        
+    // DMA channel 0 begins at 0xfe007000, channel 1 at 0xfe007100. Since the first address is 
+    // already mapped, we can access the location 100 registers down from DMA base to access channel 1.
+    dma_reg_ch1 = &dma_reg[100];
+        
+    // Start PWM/PCM timing activity
+    init_hardware();
+
+    _is_setup = 1;
+    return EXIT_SUCCESS;
+}
+
 
 int main(int argc, char **argv) {
     char *audio_files[MAX_STATIONS];
@@ -689,6 +840,8 @@ int main(int argc, char **argv) {
         }
     }
     
+    int setup_success = setup();
+    
     int errcode = tx(carrier_freq, audio_files, stations, pi, ps, rt, ppm, control_pipe);
     
     terminate(errcode);
@@ -709,7 +862,7 @@ int main(int argc, char **argv) {
  * so we need six registers to hold all bit trios (174 / 32 = 5.4375 -> 6 registers). If we wanted to 
  * assign GPIO 11 to its first function (FUNC 0), we would write the bits 100 or 0x04 (see doc pg 67) to
  * registers 5:3 at GPIO_BASE + GPFSEL1 = 0x7e200004. So in reality we would have to create a bitmask
- * for whatever is already there and add out assignment to it, as such.
+ * for whatever is already there and add our assignment to it, as such.
  *       
  *      For example, GPFSEL1 contains   11 100 010 110 110 010 000 100 100 010 101
  *      Bitmask:                        11 111 111 111 111 111 111 111 111 000 111
@@ -718,6 +871,6 @@ int main(int argc, char **argv) {
  *      Desired function:                                                  100 000
  *      (Bitmask & GPFSEL1) | Desired:  11 100 010 110 110 010 000 100 100 100 101
  * 
- * Thus we have inserted out desired data for GPIO 11 without disturbing any other data, and can write
+ * Thus we have inserted our desired data for GPIO 11 without disturbing any other data, and can write
  * back to GPIO_BASE + GPFSEL1 as a 32 bit whole.
 */

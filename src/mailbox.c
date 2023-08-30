@@ -93,7 +93,9 @@ static int mbox_property(int file_desc, void *buf)
     }
 
 #ifdef DEBUG
-    unsigned *p = buf; int i; unsigned size = *(unsigned *)buf;
+    unsigned *p = buf;
+    int i;
+    unsigned size = *(unsigned *)buf;
     for (i=0; i<size/4; i++)
         printf("%04x: 0x%08x\n", i*sizeof *p, p[i]);
 #endif
@@ -155,7 +157,8 @@ unsigned mem_lock(int file_desc, unsigned handle)
     p[i++] = 0x00000000; // end tag
     p[0] = i*sizeof *p; // actual size
 
-    if(mbox_property(file_desc, p) < 0) return 0;
+    if(mbox_property(file_desc, p) < 0) 
+        return 0;
     return p[5];
 }
 
