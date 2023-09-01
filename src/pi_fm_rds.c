@@ -630,7 +630,6 @@ init_control_blocks(uint32_t carrier_freq, int stations)
     }                                                                     // of the first cb (mbox.virt_addr), so we make an infinite loop.
 }
 
-
 void init_rds(uint16_t pi, char *ps, char *rt, char *control_pipe)
 {
     // Initialize the RDS modulator
@@ -665,28 +664,24 @@ void init_rds(uint16_t pi, char *ps, char *rt, char *control_pipe)
 static void
 init_hardware(int stations, float ppm)
 {
-    for (int i = 0; i < DMA_CHANNELS && i < stations; i++)
-    {
-        // Here we define the rate at which we want to update the GPCLK control 
-        // register using PWM.
-        //
-        // Set the range to 2 bits. PLLD is at 500 MHz, therefore to get 228 kHz
-        // we need a divisor of 500000000 / 2000 / 228 = 1096.491228
-        //
-        // This is 1096 + 2012*2^-12 theoretically.
-        //
-        // However the fractional part may have to be adjusted to take the actual
-        // frequency of your Pi's oscillator into account. For example on my Pi,
-        // the fractional part should be 1916 instead of 2012 to get exactly 
-        // 228 kHz. However RDS decoding is still okay even at 2012.
-        //
-        // So we use the 'ppm' parameter to compensate for the oscillator error
-        float divider = (PLLFREQ/(2000*228*(1.+ppm/1.e6)));
-        uint32_t idivider = (uint32_t) divider;
-        uint32_t fdivider = (uint32_t) ((divider - idivider)*pow(2, 12));
-        printf("ppm corr is %.4f, divider is %.4f (%d + %d*2^-12) [nominal 1096.4912].\n", ppm, divider, idivider, fdivider);
-    }
-    
+    // Here we define the rate at which we want to update the GPCLK control 
+    // register using PWM.
+    //
+    // Set the range to 2 bits. PLLD is at 500 MHz, therefore to get 228 kHz
+    // we need a divisor of 500000000 / 2000 / 228 = 1096.491228
+    //
+    // This is 1096 + 2012*2^-12 theoretically.
+    //
+    // However the fractional part may have to be adjusted to take the actual
+    // frequency of your Pi's oscillator into account. For example on my Pi,
+    // the fractional part should be 1916 instead of 2012 to get exactly 
+    // 228 kHz. However RDS decoding is still okay even at 2012.
+    //
+    // So we use the 'ppm' parameter to compensate for the oscillator error
+    float divider = (PLLFREQ/(2000*228*(1.+ppm/1.e6)));
+    uint32_t idivider = (uint32_t) divider;
+    uint32_t fdivider = (uint32_t) ((divider - idivider)*pow(2, 12));
+    printf("ppm corr is %.4f, divider is %.4f (%d + %d*2^-12) [nominal 1096.4912].\n", ppm, divider, idivider, fdivider);
     
     // Initialize GPCLK and PWM
     pwm_reg[PWM_CTL] = 0;                           // Disable PWM Module
@@ -704,23 +699,17 @@ init_hardware(int stations, float ppm)
     pwm_reg[PWM_CTL] = PWMCTL_CLRF;                 // Clear PWM control register
     udelay(10);
     pwm_reg[PWM_CTL] = PWMCTL_USEF1 | PWMCTL_PWEN1; // Set PWM control register to use FIFO mode 1 and enable PWM channel 1.
-    udelay(10);
     
-    // Initialise the DMA channel 0
-    dma_reg[DMA_CS] = BCM2711_DMA_RESET;                 // Reset DMA control and status (CS) register
-    udelay(10);
-    dma_reg[DMA_CS] = BCM2711_DMA_INT | BCM2711_DMA_END; // Set DMA CS register to enable interrupts and end-of-transfer detection
-    dma_reg[DMA_CONBLK_AD] = mem_virt_to_phys(ctl->cb);  // Set address for control block (in physical mem, not virtual)
-    dma_reg[DMA_DEBUG] = 7;                              // Clear any debug error flags
-    dma_reg[DMA_CS] = 0x10880001;                        // Set DMA to begin, at mid priority, i.e. to wait for outstanding writes to complete
-    
-    //Initialize DMA Channel 1
-    channels[1].dma_reg[DMA_CS] = BCM2711_DMA_RESET;
-    udelay(10);
-    channels[1].dma_reg[DMA_CS] = BCM2711_DMA_INT | BCM2711_DMA_END;
-    channels[1].dma_reg[DMA_CONBLK_AD] = mem_virt_to_phys(ctl->cb);
-    channels[1].dma_reg[DMA_DEBUG] = 7;
-    channels[1].dma_reg[DMA_CS] = 0x10880001;
+    for (int i = 0; i < DMA_CHANNELS && i < stations; i++)
+    {
+        // Initialise the DMA channels
+        channels[i].dma_reg[DMA_CS] = BCM2711_DMA_RESET;                        // Reset DMA control and status (CS) register
+        udelay(10);
+        channels[i].dma_reg[DMA_CS] = BCM2711_DMA_INT | BCM2711_DMA_END;        // Set DMA CS register to enable interrupts and end-of-transfer detection
+        channels[i].dma_reg[DMA_CONBLK_AD] = mem_virt_to_phys(channels[i].cb);  // Set address for control block (in physical mem, not virtual)
+        channels[i].dma_reg[DMA_DEBUG] = 7;                                     // Clear any debug error flags
+        channels[i].dma_reg[DMA_CS] = 0x10880001;                               // Set DMA to begin, at mid priority, i.e. to wait for outstanding writes to complete
+    }
     
     // See Note 1 below for GPIO explained
     gpio_reg[GPFSEL0] = (gpio_reg[GPFSEL0] & ~(7 << 12)) | (4 << 12); // GPIO4 needs to be ALT FUNC 0 to output the clock GPCLK0
@@ -761,8 +750,10 @@ int setup(uint32_t carrier_freq, int stations, uint16_t pi, char *ps, char *rt, 
         
     // DMA channel 0 begins at 0xfe007000, channel 1 at 0xfe007100. Since the first address is 
     // already mapped, we can access the location 100 registers down from DMA base to access channel 1.
-    channels[0].dma_reg = dma_reg;
-    channels[1].dma_reg = &dma_reg[100];
+    for (int i = 0; i < DMA_CHANNELS && i < stations; i++)
+    {
+        channels[i].dma_reg = &dma_reg[DMA_CHANNEL_INC * i];
+    }
     
     // Use the mailbox interface to the VC to ask for physical memory.
     mbox.handle = mbox_open();
