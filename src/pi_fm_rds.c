@@ -135,6 +135,8 @@
 
 #define NUM_SAMPLES        50000
 #define NUM_CBS            (NUM_SAMPLES * 2)
+#define SUBSIZE            1
+#define DATA_SIZE          5000
 
 // 15 DMA channels are usable on the RPi (0..14)
 #define DMA_CHANNELS    15
@@ -165,18 +167,18 @@
 #define DMA_DEBUG              (0x20/4)
 
 // GPIO Memory Addresses
-#define GPIO_FSEL0      (0x00/4)
-#define GPIO_SET0       (0x1c/4)
-#define GPIO_CLR0       (0x28/4)
-#define GPIO_LEV0       (0x34/4)
-#define GPIO_PULLEN     (0x94/4)
-#define GPIO_PULLCLK    (0x98/4)
+#define GPIO_FSEL0           (0x00/4)
+#define GPIO_SET0            (0x1c/4)
+#define GPIO_CLR0            (0x28/4)
+#define GPIO_LEV0            (0x34/4)
+#define GPIO_PULLEN          (0x94/4)
+#define GPIO_PULLCLK         (0x98/4)
 
 // PWM Memory Addresses
-#define PWM_CTL         (0x00/4)
-#define PWM_DMAC        (0x08/4)
-#define PWM_RNG1        (0x10/4)
-#define PWM_FIFO        (0x18/4)
+#define PWM_CTL              (0x00/4)
+#define PWM_DMAC             (0x08/4)
+#define PWM_RNG1             (0x10/4)
+#define PWM_FIFO             (0x18/4)
 
 #define DMA_VIRT_BASE        (PERIPH_VIRT_BASE + DMA_BASE_OFFSET)
 #define PWM_VIRT_BASE        (PERIPH_VIRT_BASE + PWM_BASE_OFFSET)
@@ -253,36 +255,35 @@ typedef struct {
     uint32_t pad[2]; // _reserved_
 } dma_cb_t;
 
-// Memory mapping
-typedef struct {
-    uint8_t *virtaddr;
-    uint32_t physaddr;
-} page_map_t;
-
-
 // Main control structure per channel, used for multiple DMA channels
 struct channel {
     uint8_t *virtbase;
+    
+    char *audio_file = NULL;
     dma_cb_t cb[NUM_CBS];
     uint32_t sample[NUM_SAMPLES];
-    uint32_t last_cb;
-    page_map_t *page_map;
     volatile uint32_t *dma_reg;
-    uint32_t carrier_freq;
-
-    // Set by user
-    uint32_t subcycle_time_us;
-
-    // Set by system
-    uint32_t num_samples;
-    uint32_t num_cbs;
-    uint32_t num_pages;
-
-    // Used only for control purposes
-    uint32_t width_max;
+    volatile uint32_t *clk_reg;
+    uint32_t carrier_freq = 107900000;
+    uint32_t freq_ctl = 0;
+    
+    // RDS Variables
+    char *ps = NULL;
+    char *rt = "PiFmRds: live FM-RDS transmission from the RaspberryPi";
+    uint16_t pi = 0x1234;
+    uint16_t ps_count = 0;
+    uint16_t ps_count2 = 0;
+    int varying_ps = 0;
+    char myps[9] = {0};
+    
+    // TX variables / Data structures for baseband data
+    float data[DATA_SIZE];
+    int data_len = 0;
+    int data_index = 0;
+    uint32_t last_cb = 0U;
 };
 
-// One control structure per channel
+// One control structure per possible channel
 static struct channel channels[DMA_CHANNELS];
 
 
@@ -299,24 +300,11 @@ static volatile uint32_t *clk_reg;
 static volatile uint32_t *dma_reg;
 static volatile uint32_t *gpio_reg;
 
-// RDS Variables
-uint16_t ps_count = 0;
-uint16_t ps_count2 = 0;
-int varying_ps = 0;
-char myps[9] = {0};
-
-// DMA Variables
-uint32_t freq_ctl = 0; // Possible issue. We need multiple words for multiple channels, may be better to add freq_ctl to "channel" struct
-uint32_t last_cb = NULL;
-
 #define PAGE_SIZE    4096
 #define PAGE_SHIFT    12
-#define NUM_PAGES    ((sizeof(struct control_data_s) + PAGE_SIZE - 1) >> PAGE_SHIFT)
+#define NUM_PAGES    ((sizeof(struct channel) + PAGE_SIZE - 1) >> PAGE_SHIFT)
 static uint8_t _is_setup = 0;
 unsigned memory_size = NUM_PAGES * 4096;
-
-static struct control_data_s *ctl;
-static struct control_data_s *ctl1;
 
 // Very short delay as demanded per datasheet
 static void
@@ -415,6 +403,7 @@ map_peripheral(uint32_t base, uint32_t len)
     return vaddr;
 }
 
+
 // Returns a pointer to the control block of this channel in DMA memory
 uint8_t*
 get_cb(int channel)
@@ -431,7 +420,6 @@ clear_channel(int channel)
     dma_cb_t *cbp = (dma_cb_t *) get_cb(channel);
     uint32_t *dp = (uint32_t *) channels[channel].virtbase;
 
-    log_debug("clear_channel: channel=%d\n", channel);
     if (!channels[channel].virtbase)
         fatal("Error: channel %d has not been initialized with 'init_channel(..)'\n", channel);
 
@@ -452,59 +440,47 @@ clear_channel(int channel)
     return EXIT_SUCCESS;
 }
 
-
-
-#define SUBSIZE 1
-#define DATA_SIZE 5000
-
-int tx(uint32_t carrier_freq, char *audio_files[], int stations, char *control_pipe) {
+int tx(uint32_t carrier_freq, char *audio_files[], int stations) {
     
 
-    // Data structures for baseband data
-    float data[DATA_SIZE];
-    int data_len = 0;
-    int data_index = 0;
-
-    // Initialize the baseband generator
-    for (int i = 0; i < stations; i++) {
-        if(fm_mpx_open(audio_files[i], DATA_SIZE, i) < 0)
+    // Setup
+    for (int station = 0; station < stations; station++) {
+        // Initialize the baseband generator
+        if(fm_mpx_open(channels[station].audio_file, DATA_SIZE, station) < 0)
         {
             printf("Error when trying to open file(s). \n");
             return 1;
         }
+        
+        // By this point a data stream from the specified file has been initialized in the fm_mpx_open function.
+        // Later we will send the array "data" into that class to be populated with music samples.
+    
+        printf("Starting to transmit on %3.1f MHz.\n", channels[station].carrier_freq / 1e6);
     }
 
-    // By this point a data stream from the specified file has been initialized in the fm_mpx_open function.
-    // Later we will send the array "data" into that class to be populated with music samples.
-    
-    printf("Starting to transmit on %3.1f MHz.\n", carrier_freq/1e6);
-
-    for (;;) {
+    // Transmission
+    for (int station = 0; station < stations; station++) {
         
         // Default (varying) PS
-        if(varying_ps) {
-            if(ps_count == 512) {
-                snprintf(myps, 9, "%08d", ps_count2);
-                set_rds_ps(myps);
-                ps_count2++;
+        if(channels[station].varying_ps) {
+            if(channels[station].ps_count == 512) {
+                snprintf(channels[station].myps, 9, "%08d", channels[station].ps_count2);
+                set_rds_ps(channels[station].myps);
+                channels[station].ps_count2++;
             }
-            if(ps_count == 1024) {
+            if(channels[station].ps_count == 1024) {
                 set_rds_ps("RPi-Live");
-                ps_count = 0;
+                channels[station].ps_count = 0;
             }
-            ps_count++;
-        }
-        
-        if(control_pipe && poll_control_pipe() == CONTROL_PIPE_PS_SET) {
-            varying_ps = 0;
+            channels[station].ps_count++;
         }
         
         usleep(5000);
 
         // Calculate the number of free slots left in the DMA buffer
-        uint32_t cur_cb = mem_phys_to_virt(dma_reg[DMA_CONBLK_AD]);
-        int last_sample = (last_cb - (uint32_t)mbox.virt_addr) / (sizeof(dma_cb_t) * 2);
-        int this_sample = (cur_cb - (uint32_t)mbox.virt_addr) / (sizeof(dma_cb_t) * 2);
+        uint32_t cur_cb = mem_phys_to_virt(channels[station].dma_reg[DMA_CONBLK_AD]);
+        int last_sample = (last_cb - (uint32_t)channels[station].virtbase)/ (sizeof(dma_cb_t) * 2);
+        int this_sample = (cur_cb - (uint32_t)channels[station].virtbase) / (sizeof(dma_cb_t) * 2);
         int free_slots = this_sample - last_sample;
 
         if (free_slots < 0)
@@ -512,30 +488,32 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations, char *control_p
 
         while (free_slots >= SUBSIZE) {
             // get more baseband samples if necessary
-            if(data_len == 0) {
-                if(fm_mpx_get_samples(data, 1) < 0 ) {
+            if(channels[station].data_len == 0) {
+                if(fm_mpx_get_samples(channels[station].data, 1) < 0 ) {
                     printf("Something went horribly wrong while fetching samples.\n");
                     terminate(0);
                 }
-                data_len = DATA_SIZE;
-                data_index = 0;
+                channels[station].data_len = DATA_SIZE;
+                channels[station].data_index = 0;
             }
             
-            float dval = data[data_index] * (DEVIATION / 10.);
-            data_index++;
-            data_len--;
+            float dval = channels[station].data[channels[station].data_index] * (DEVIATION / 10.);
+            channels[station].data_index++;
+            channels[station].data_len--;
 
             int intval = (int)((floor)(dval));
             //int frac = (int)((dval - (float)intval) * SUBSIZE);
 
-
-            ctl->sample[last_sample++] = (0x5A << 24 | freq_ctl) + intval; //(frac > j ? intval + 1 : intval);
+            channels[station].sample[last_sample++] = (0x5A << 24 | channels[station].freq_ctl) + intval; //(frac > j ? intval + 1 : intval);
             if (last_sample == NUM_SAMPLES)
                 last_sample = 0;
 
             free_slots -= SUBSIZE;
         }
-        last_cb = (uint32_t)mbox.virt_addr + last_sample * sizeof(dma_cb_t) * 2;
+        last_cb = (uint32_t)channels[station].virtbase + last_sample * sizeof(dma_cb_t) * 2;
+        
+        if (station == stations - 1)
+            station = 0;
     }
 
     return 0;
@@ -594,7 +572,7 @@ init_control_blocks(uint32_t carrier_freq, int stations)
 {
     for (int i = 0; i < DMA_CHANNELS && i < stations; i++)
     {
-        channels[i] = mbox.virt_addr + (memory_size * i);
+        channels[i].virtbase = mbox.virt_addr + (memory_size * i);
         dma_cb_t *cbp = channels[i].cb;
         uint32_t phys_sample_dst = CM_GP0DIV + (i * 0x8);
         uint32_t phys_pwm_fifo_addr = PWM_PHYS_BASE + 0x18;
@@ -618,7 +596,7 @@ init_control_blocks(uint32_t carrier_freq, int stations)
             
             // Set up a future control block for a delay.
             cbp->info = BCM2711_DMA_NO_WIDE_BURSTS | BCM2711_DMA_WAIT_RESP | BCM2711_DMA_D_DREQ | BCM2711_DMA_PER_MAP(5);
-            cbp->src = mem_virt_to_phys(mbox.virt_addr);
+            cbp->src = mem_virt_to_phys(channels[i].virtbase);
             cbp->dst = phys_pwm_fifo_addr;
             cbp->length = 4 - stations;
             cbp->stride = 0;
@@ -626,7 +604,7 @@ init_control_blocks(uint32_t carrier_freq, int stations)
             cbp++;
         }
         cbp--;
-        cbp->next = mem_virt_to_phys(mbox.virt_addr + (memory_size * i)); // Here we reset the 'next' val of the last cb to be the address
+        cbp->next = mem_virt_to_phys(channels[i].virtbase); // Here we reset the 'next' val of the last cb to be the address
     }                                                                     // of the first cb (mbox.virt_addr), so we make an infinite loop.
 }
 
@@ -700,9 +678,9 @@ init_hardware(int stations, float ppm)
     udelay(10);
     pwm_reg[PWM_CTL] = PWMCTL_USEF1 | PWMCTL_PWEN1; // Set PWM control register to use FIFO mode 1 and enable PWM channel 1.
     
+    // Initialise the DMA channels
     for (int i = 0; i < DMA_CHANNELS && i < stations; i++)
     {
-        // Initialise the DMA channels
         channels[i].dma_reg[DMA_CS] = BCM2711_DMA_RESET;                        // Reset DMA control and status (CS) register
         udelay(10);
         channels[i].dma_reg[DMA_CS] = BCM2711_DMA_INT | BCM2711_DMA_END;        // Set DMA CS register to enable interrupts and end-of-transfer detection
@@ -743,10 +721,7 @@ int setup(uint32_t carrier_freq, int stations, uint16_t pi, char *ps, char *rt, 
     clk_reg = map_peripheral(CLK_VIRT_BASE, CLK_LEN);
     gpio_reg = map_peripheral(GPIO_VIRT_BASE, GPIO_LEN);
     if (pwm_reg == NULL || dma_reg == NULL || clk_reg == NULL || gpio_reg == NULL)
-    {
-        printf("ERROR: One of the peripheral registers is NULL.");
-        return EXIT_FAILURE;
-    }
+        fatal("ERROR: One of the peripheral registers is NULL.");
         
     // DMA channel 0 begins at 0xfe007000, channel 1 at 0xfe007100. Since the first address is 
     // already mapped, we can access the location 100 registers down from DMA base to access channel 1.
@@ -778,7 +753,7 @@ int setup(uint32_t carrier_freq, int stations, uint16_t pi, char *ps, char *rt, 
     init_hardware(stations, ppm);
     
     // Setup control block architecture
-    init_control_blocks(carrier_freq);
+    init_control_blocks(carrier_freq, stations);
     
     // Setup RDS data
     init_rds(pi, ps, rt, control_pipe);

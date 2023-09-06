@@ -1,4 +1,4 @@
-Pi-FM-RDS
+Pi-FM-RDS (Now with Multi-Channel Support!)
 =========
 
 
