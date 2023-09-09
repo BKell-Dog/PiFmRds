@@ -1,5 +1,6 @@
 /*
  * PiFmRds - FM/RDS transmitter for the Raspberry Pi
+ * Copyright (C) 2023 BKell-Dog
  * Copyright (C) 2014, 2015 Christophe Jacquet, F8FTK
  * Copyright (C) 2012, 2015 Richard Hirst
  * Copyright (C) 2012 Oliver Mattos and Oskar Weigl
@@ -259,28 +260,28 @@ typedef struct {
 struct channel {
     uint8_t *virtbase;
     
-    char *audio_file = NULL;
+    char *audio_file;
     dma_cb_t cb[NUM_CBS];
     uint32_t sample[NUM_SAMPLES];
     volatile uint32_t *dma_reg;
     volatile uint32_t *clk_reg;
-    uint32_t carrier_freq = 107900000;
-    uint32_t freq_ctl = 0;
+    uint32_t carrier_freq;
+    uint32_t freq_ctl;
     
     // RDS Variables
-    char *ps = NULL;
-    char *rt = "PiFmRds: live FM-RDS transmission from the RaspberryPi";
-    uint16_t pi = 0x1234;
-    uint16_t ps_count = 0;
-    uint16_t ps_count2 = 0;
-    int varying_ps = 0;
-    char myps[9] = {0};
+    char *ps;
+    char *rt;
+    uint16_t pi;
+    uint16_t ps_count;
+    uint16_t ps_count2;
+    int varying_ps;
+    char myps[9];
     
     // TX variables / Data structures for baseband data
     float data[DATA_SIZE];
-    int data_len = 0;
-    int data_index = 0;
-    uint32_t last_cb = 0U;
+    int data_len;
+    int data_index;
+    uint32_t last_cb;
 };
 
 // One control structure per possible channel
@@ -403,46 +404,29 @@ map_peripheral(uint32_t base, uint32_t len)
     return vaddr;
 }
 
-
-// Returns a pointer to the control block of this channel in DMA memory
-uint8_t*
-get_cb(int channel)
-{
-    return channels[channel].virtbase + (sizeof(uint32_t) * channels[channel].num_samples);
-}
-
-// Reset this channel to original state (all samples=0, all cbs=clr0)
+// Since C doesn't like people to initialize variables in the definition
+// of a struct, we must initialize them here.
 int
-clear_channel(int channel)
-{
-    int i;
-    uint32_t phys_gpclr0 = 0x7e200000 + 0x28;
-    dma_cb_t *cbp = (dma_cb_t *) get_cb(channel);
-    uint32_t *dp = (uint32_t *) channels[channel].virtbase;
-
-    if (!channels[channel].virtbase)
-        fatal("Error: channel %d has not been initialized with 'init_channel(..)'\n", channel);
-
-    // First we have to stop all currently enabled pulses
-    for (i = 0; i < channels[channel].num_samples; i++) {
-        cbp->dst = phys_gpclr0;
-        cbp += 2;
-    }
-
-    // Let DMA do one cycle to actually clear them
-    udelay(channels[channel].subcycle_time_us);
-
-    // Finally set all samples to 0 (instead of gpio_mask)
-    for (i = 0; i < channels[channel].num_samples; i++) {
-        *(dp + i) = 0;
-    }
-
-    return EXIT_SUCCESS;
+init_channel(int station, char *audio_file) {
+    channels[station].audio_file = audio_file;
+    channels[station].carrier_freq = 107900000;
+    channels[station].freq_ctl = 0;
+    channels[station].ps = NULL;
+    channels[station].rt = "PiFmRds: Live FM-RDS transmission from the Raspberry Pi";
+    channels[station].pi = 0x1234;
+    channels[station].ps_count = 0;
+    channels[station].ps_count2 = 0;
+    channels[station].varying_ps = 0;
+    memset(channels[station].myps, 0, sizeof(channels[station].myps));
+    channels[station].data_len = 0;
+    channels[station].data_index = 0;
+    channels[station].last_cb = 0U;
+    
+    return 1;
 }
 
-int tx(uint32_t carrier_freq, char *audio_files[], int stations) {
+int tx(uint32_t carrier_freq, int stations) {
     
-
     // Setup
     for (int station = 0; station < stations; station++) {
         // Initialize the baseband generator
@@ -475,13 +459,17 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations) {
             channels[station].ps_count++;
         }
         
+        printf("Past varying PS\n");
+        
         usleep(5000);
 
         // Calculate the number of free slots left in the DMA buffer
         uint32_t cur_cb = mem_phys_to_virt(channels[station].dma_reg[DMA_CONBLK_AD]);
-        int last_sample = (last_cb - (uint32_t)channels[station].virtbase)/ (sizeof(dma_cb_t) * 2);
+        int last_sample = (channels[station].last_cb - (uint32_t)channels[station].virtbase)/ (sizeof(dma_cb_t) * 2);
         int this_sample = (cur_cb - (uint32_t)channels[station].virtbase) / (sizeof(dma_cb_t) * 2);
         int free_slots = this_sample - last_sample;
+
+        printf("Past cur_bc calcs\n");
 
         if (free_slots < 0)
             free_slots += NUM_SAMPLES;
@@ -489,10 +477,12 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations) {
         while (free_slots >= SUBSIZE) {
             // get more baseband samples if necessary
             if(channels[station].data_len == 0) {
-                if(fm_mpx_get_samples(channels[station].data, 1) < 0 ) {
+                printf("About to fetch samples\n");
+                if(fm_mpx_get_samples(channels[station].data, station) < 0 ) {
                     printf("Something went horribly wrong while fetching samples.\n");
                     terminate(0);
                 }
+                printf("Past getting more samples\n");
                 channels[station].data_len = DATA_SIZE;
                 channels[station].data_index = 0;
             }
@@ -510,10 +500,12 @@ int tx(uint32_t carrier_freq, char *audio_files[], int stations) {
 
             free_slots -= SUBSIZE;
         }
-        last_cb = (uint32_t)channels[station].virtbase + last_sample * sizeof(dma_cb_t) * 2;
+        printf("After free slot while loop\n");
+        channels[station].last_cb = (uint32_t)channels[station].virtbase + last_sample * sizeof(dma_cb_t) * 2;
         
         if (station == stations - 1)
             station = 0;
+        printf("End of loop");
     }
 
     return 0;
@@ -533,108 +525,62 @@ setup_sighandlers(void)
     }
 }
 
-// Setup a channel with a specific subcycle time. After that pulse-widths can be
-// added at any time.
-int
-init_channel(int channel_num, int subcycle_time_us)
-{
-    log_debug("Initializing channel %d...\n", channel_num);
-    if (_is_setup == 0)
-        fatal("Error: you need to call `setup(..)` before initializing channels\n");
-    if (channel_num > DMA_CHANNELS-1)
-        fatal("Error: maximum channel is %d (requested channel %d)\n", DMA_CHANNELS-1, channel_num);
-    if (channels[channel_num].virtbase)
-        fatal("Error: channel %d already initialized.\n", channel_num);
-    if (subcycle_time_us < SUBCYCLE_TIME_US_MIN)
-        fatal("Error: subcycle time %dus is too small (min=%dus)\n", subcycle_time_us, SUBCYCLE_TIME_US_MIN);
-
-    // Setup Data
-    channels[channel_num].subcycle_time_us = subcycle_time_us;
-    channels[channel_num].num_samples = NUM_SAMPLES;
-    channels[channel_num].width_max = channels[channel_num].num_samples - 1;
-    channels[channel_num].num_cbs = channels[channel_num].num_samples * 2;
-    channels[channel_num].num_pages = ((channels[channel_num].num_cbs * 32 + channels[channel_num].num_samples * 4 + \
-                                       PAGE_SIZE - 1) >> PAGE_SHIFT);
-
-    // Initialize channel
-    if (init_virtbase(channel_num) == EXIT_FAILURE)
-        return EXIT_FAILURE;
-    if (make_pagemap(channel_num) == EXIT_FAILURE)
-        return EXIT_FAILURE;
-    if (init_ctrl_data(channel_num) == EXIT_FAILURE)
-        return EXIT_FAILURE;
-    return EXIT_SUCCESS;
-}
-
-
 void
-init_control_blocks(uint32_t carrier_freq, int stations)
+init_control_blocks(uint32_t carrier_freq, int station)
 {
-    for (int i = 0; i < DMA_CHANNELS && i < stations; i++)
+    channels[station].virtbase = mbox.virt_addr + (memory_size * station);
+    dma_cb_t *cbp = channels[station].cb;
+    uint32_t phys_sample_dst = CM_GP0DIV + (station * 0x8);
+    uint32_t phys_pwm_fifo_addr = PWM_PHYS_BASE + 0x18;
+    
+    // Calculate the frequency control word (Clock freq / Desired freq)
+    // The fractional part is stored in the lower 12 bits
+    channels[station].freq_ctl = ((float)(PLLFREQ / channels[station].carrier_freq)) * ( 1 << 12 );
+    
+    for (int j = 0; j < NUM_SAMPLES; j++)
     {
-        channels[i].virtbase = mbox.virt_addr + (memory_size * i);
-        dma_cb_t *cbp = channels[i].cb;
-        uint32_t phys_sample_dst = CM_GP0DIV + (i * 0x8);
-        uint32_t phys_pwm_fifo_addr = PWM_PHYS_BASE + 0x18;
+        channels[station].sample[j] = 0x5a << 24 | channels[station].freq_ctl; // Silence
         
-        // Calculate the frequency control word (Clock freq / Desired freq)
-        // The fractional part is stored in the lower 12 bits
-        freq_ctl = ((float)(PLLFREQ / channels[i].carrier_freq)) * ( 1 << 12 );
+        // Set up a control block for a future DMA transfer of audio data (data will be filled in below)
+        cbp->info = BCM2711_DMA_NO_WIDE_BURSTS | BCM2711_DMA_WAIT_RESP;
+        cbp->src = mem_virt_to_phys(channels[station].sample + j);
+        cbp->dst = phys_sample_dst;
+        cbp->length = 4;
+        cbp->stride = 0;
+        cbp->next = mem_virt_to_phys(cbp + 1);
+        cbp++;
         
-        for (int j = 0; j < NUM_SAMPLES; j++)
-        {
-            channels[i].sample[j] = 0x5a << 24 | freq_ctl; // Silence
-            
-            // Set up a control block for a future DMA transfer of audio data (data will be filled in below)
-            cbp->info = BCM2711_DMA_NO_WIDE_BURSTS | BCM2711_DMA_WAIT_RESP;
-            cbp->src = mem_virt_to_phys(channels[i].sample + j);
-            cbp->dst = phys_sample_dst;
-            cbp->length = 4;
-            cbp->stride = 0;
-            cbp->next = mem_virt_to_phys(cbp + 1);
-            cbp++;
-            
-            // Set up a future control block for a delay.
-            cbp->info = BCM2711_DMA_NO_WIDE_BURSTS | BCM2711_DMA_WAIT_RESP | BCM2711_DMA_D_DREQ | BCM2711_DMA_PER_MAP(5);
-            cbp->src = mem_virt_to_phys(channels[i].virtbase);
-            cbp->dst = phys_pwm_fifo_addr;
-            cbp->length = 4 - stations;
-            cbp->stride = 0;
-            cbp->next = mem_virt_to_phys(cbp + 1);
-            cbp++;
-        }
-        cbp--;
-        cbp->next = mem_virt_to_phys(channels[i].virtbase); // Here we reset the 'next' val of the last cb to be the address
-    }                                                                     // of the first cb (mbox.virt_addr), so we make an infinite loop.
-}
+        // Set up a future control block for a delay.
+        cbp->info = BCM2711_DMA_NO_WIDE_BURSTS | BCM2711_DMA_WAIT_RESP | BCM2711_DMA_D_DREQ | BCM2711_DMA_PER_MAP(5);
+        cbp->src = mem_virt_to_phys(channels[station].virtbase);
+        cbp->dst = phys_pwm_fifo_addr;
+        cbp->length = 4;
+        cbp->stride = 0;
+        cbp->next = mem_virt_to_phys(cbp + 1);
+        cbp++;
+    }
+    cbp--;
+    cbp->next = mem_virt_to_phys(channels[station].virtbase);   // Here we reset the 'next' val of the last cb to be the address
+}                                                               // of the first cb (mbox.virt_addr), so we make an infinite loop.
 
-void init_rds(uint16_t pi, char *ps, char *rt, char *control_pipe)
-{
+void 
+init_rds(uint16_t pi, char *ps, char *rt, int station) {
+        
     // Initialize the RDS modulator
     set_rds_pi(pi);
     set_rds_rt(rt);
-    ps_count = 0;
-    ps_count2 = 0;
-    varying_ps = 0;
+    channels[station].ps_count = 0;
+    channels[station].ps_count2 = 0;
+    channels[station].varying_ps = 0;
     
     if(ps) {
         set_rds_ps(ps);
         printf("PI: %04X, PS: \"%s\".\n", pi, ps);
     } else {
         printf("PI: %04X, PS: <Varying>.\n", pi);
-        varying_ps = 1;
+        channels[station].varying_ps = 1;
     }
     printf("RT: \"%s\"\n", rt);
-    
-    // Initialize the control pipe reader
-    if(control_pipe) {
-        if(open_control_pipe(control_pipe) == 0) {
-            printf("Reading control commands on %s.\n", control_pipe);
-        } else {
-            printf("Failed to open control pipe: %s.\n", control_pipe);
-            control_pipe = NULL;
-        }
-    }
 }
 
 
@@ -707,7 +653,7 @@ init_hardware(int stations, float ppm)
 // setup(..) needs to be called once and starts the PWM timer. Delay hardware
 // and pulse-width-increment-granularity is set for all DMA channels and cannot
 // be changed during runtime due to hardware mechanics (specific PWM timing).
-int setup(uint32_t carrier_freq, int stations, uint16_t pi, char *ps, char *rt, float ppm, char *control_pipe)
+int setup(char *audio_file, uint32_t carrier_freq, int stations, uint16_t pi, char *ps, char *rt, float ppm)
 {
     if (_is_setup == 1)
         fatal("Error: setup(..) has already been called before\n");
@@ -722,6 +668,11 @@ int setup(uint32_t carrier_freq, int stations, uint16_t pi, char *ps, char *rt, 
     gpio_reg = map_peripheral(GPIO_VIRT_BASE, GPIO_LEN);
     if (pwm_reg == NULL || dma_reg == NULL || clk_reg == NULL || gpio_reg == NULL)
         fatal("ERROR: One of the peripheral registers is NULL.");
+        
+    for (int i = 0; i < MAX_STATIONS; i++)
+    {
+        init_channel(i, audio_file);
+    }    
         
     // DMA channel 0 begins at 0xfe007000, channel 1 at 0xfe007100. Since the first address is 
     // already mapped, we can access the location 100 registers down from DMA base to access channel 1.
@@ -756,7 +707,7 @@ int setup(uint32_t carrier_freq, int stations, uint16_t pi, char *ps, char *rt, 
     init_control_blocks(carrier_freq, stations);
     
     // Setup RDS data
-    init_rds(pi, ps, rt, control_pipe);
+    init_rds(pi, ps, rt, 0);
 
     _is_setup = 0x1;
     return EXIT_SUCCESS;
@@ -765,14 +716,13 @@ int setup(uint32_t carrier_freq, int stations, uint16_t pi, char *ps, char *rt, 
 
 int main(int argc, char **argv) {
     char *audio_files[MAX_STATIONS];
+    char *audio_file;
     int stations = 0;
-    char *control_pipe = NULL;
     uint32_t carrier_freq = 107900000;
     char *ps = NULL;
     char *rt = "PiFmRds: live FM-RDS transmission from the RaspberryPi";
     uint16_t pi = 0x1234;
     float ppm = 0;
-    
     
     // Parse command-line arguments
     for(int i=1; i<argc; i++) {
@@ -783,9 +733,11 @@ int main(int argc, char **argv) {
             param = argv[i+1];
         
         if((strcmp("-wav", arg)==0 || strcmp("-audio", arg)==0) && param != NULL) {
-            
+            i++;
+            stations++;
+            audio_file = param;
             // There can be up to five audio files submitted, parse args until next tack command is found.
-            for (int j = i + 1; j < argc; j++) {
+            /*for (int j = i + 1; j < argc; j++) {
                 char *next_arg = argv[j];
                 if(next_arg == NULL || next_arg[0] == '-')
                     break;
@@ -794,7 +746,7 @@ int main(int argc, char **argv) {
                     stations++;
                     i++;
                 }
-            }
+            }*/
         } else if(strcmp("-freq", arg)==0 && param != NULL) {
             i++;
             carrier_freq = 1e6 * atof(param);
@@ -812,19 +764,16 @@ int main(int argc, char **argv) {
         } else if(strcmp("-ppm", arg)==0 && param != NULL) {
             i++;
             ppm = atof(param);
-        } else if(strcmp("-ctl", arg)==0 && param != NULL) {
-            i++;
-            control_pipe = param;
         } else {
             fatal("Unrecognised argument: %s.\n"
             "Syntax: pi_fm_rds [-freq freq] [-audio file] [-ppm ppm_error] [-pi pi_code]\n"
-            "                  [-ps ps_text] [-rt rt_text] [-ctl control_pipe]\n", arg);
+            "                  [-ps ps_text] [-rt rt_text]\n", arg);
         }
     }
     
-    int setup_success = setup(carrier_freq, stations, pi, ps, rt, ppm, control_pipe);
+    setup(audio_file, carrier_freq, stations, pi, ps, rt, ppm);
     
-    int errcode = tx(carrier_freq, audio_files, stations, control_pipe);
+    int errcode = tx(carrier_freq, stations);
     
     terminate(errcode);
 }

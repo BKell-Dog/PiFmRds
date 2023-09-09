@@ -26,6 +26,7 @@
 
 #include <sndfile.h>
 #include <stdlib.h>
+#include <string.h>
 #include <strings.h>
 #include <math.h>
 
@@ -52,16 +53,16 @@ int phase_19 = 0;
 struct channel {
     float downsample_factor;
     float *audio_buffer;
-    int audio_index = 0;
-    int audio_len = 0;
+    int audio_index;
+    int audio_len;
     float audio_pos;
     SNDFILE *inf;
     size_t length;
     int num_channels; // i.e. mono or stereo
     
-    float fir_buffer_mono[FIR_SIZE] = {0};
-    float fir_buffer_stereo[FIR_SIZE] = {0};
-    int fir_index = 0;
+    float fir_buffer_mono[FIR_SIZE];
+    float fir_buffer_stereo[FIR_SIZE];
+    int fir_index;
     // coefficients of the low-pass FIR filter
     float low_pass_fir[FIR_HALF_SIZE];
 };
@@ -80,9 +81,21 @@ float *alloc_empty_buffer(size_t length) {
     return p;
 }
 
+int
+mpx_init_channel(int station) {    
+    channels[station].audio_index = 0;
+    channels[station].audio_len = 0;
+    memset(channels[station].fir_buffer_mono, 0, sizeof(channels[station].fir_buffer_mono));
+    memset(channels[station].fir_buffer_stereo, 0, sizeof(channels[station].fir_buffer_stereo));
+    channels[station].fir_index = 0;
+    
+    return 1;
+}
+
 
 int fm_mpx_open(char *filename, size_t len, int station) {
-    struct channel c = channels[station];
+    mpx_init_channel(station);
+    
     channels[station].length = len;
     
     if(filename != NULL) {
@@ -106,7 +119,7 @@ int fm_mpx_open(char *filename, size_t len, int station) {
                 printf("Error: could not open input file %s. \n", filename);
                 return -1;
             } else {
-                printf("Using audio file: %s\n", filename);
+                printf("Using audio file: %s for channel %d\n", filename, station);
             }
         }
                 
@@ -151,7 +164,7 @@ int fm_mpx_open(char *filename, size_t len, int station) {
         */
             
         channels[station].audio_pos = channels[station].downsample_factor;
-        channels[station].audio_buffer = alloc_empty_buffer(length * channels[station].num_channels);
+        channels[station].audio_buffer = alloc_empty_buffer(channels[station].length * channels[station].num_channels);
         if(channels[station].audio_buffer == NULL) 
             return -1;
     
@@ -170,35 +183,34 @@ int fm_mpx_open(char *filename, size_t len, int station) {
 // samples provided by this function are in 0..10: they need to be divided by
 // 10 after.
 int fm_mpx_get_samples(float *mpx_buffer, int station) {
-    get_rds_samples(mpx_buffer, length);
-    
-    struct channel c = channels[station];
+        
+    get_rds_samples(mpx_buffer, channels[station].length);
     
     if (station < 0) {
-        printf("Improper station. Enter a real integer between 1 and %d\n", MAX_STATIONS);
+        printf("Error: Improper station. Enter a real integer between 1 and %d\n", MAX_STATIONS);
         return -1;
     }
 
-    if(c.inf == NULL) { // If there is no audio, stop here 
-        printf("Error: No audio found.\n");
+    if(channels[station].inf == NULL) { // If there is no audio, stop here 
+        printf("Fatal: No audio found for channel %d.\n", station);
         return 0;
     }
     
-    for(int i = 0; i < length; i++) {
+    for(int i = 0; i < channels[station].length; i++) {
         
-        if(c.audio_pos >= c.downsample_factor) {
-            c.audio_pos -= c.downsample_factor;
+        if(channels[station].audio_pos >= channels[station].downsample_factor) {
+            channels[station].audio_pos -= channels[station].downsample_factor;
             
-            if(c.audio_len == 0) { 
-                for(int j=0; j<2; j++) {                                                            // Loop for one attempt and one retry
-                    c.audio_len = sf_read_float(c.inf, c.audio_buffer, length);     // Read "length" bits from file "inf" and store in "audio_buffer", store num of bits read in "audio_len"
-                    if (c.audio_len < 0) {                                                     // Handle error from sf_read_float
+            if(channels[station].audio_len == 0) { 
+                for(int j=0; j<2; j++) {                    // Loop for one attempt and one retry
+                    channels[station].audio_len = sf_read_float(channels[station].inf, channels[station].audio_buffer, channels[station].length);              // Read "length" bits from file "inf" and store in "audio_buffer", store num of bits read in "audio_len"
+                    if (channels[station].audio_len < 0) {         // Handle error from sf_read_float
                         fprintf(stderr, "Error reading audio\n");
                         return -1;
                     }
-                    if (c.audio_len < length) {                                // End of file has been reached
+                    if (channels[station].audio_len < channels[station].length) {                                // End of file has been reached
                         printf("Attempting to rewind file.\n");
-                        if(sf_seek(c.inf, 0, SEEK_SET) < 0 ) {                 // Rewind back to file beginning
+                        if(sf_seek(channels[station].inf, 0, SEEK_SET) < 0 ) {                 // Rewind back to file beginning
                             fprintf(stderr, "Could not rewind in audio file, terminating\n");
                             return -1;
                         }
@@ -211,34 +223,34 @@ int fm_mpx_get_samples(float *mpx_buffer, int station) {
                              * now we have to fill in the remaining empty buffer registers with the bytes at the beginning of the file
                              * until the buffer is full, then we proceed as normal.
                              */
-                            int left_to_cover = ((int) length) - ((int)c.audio_len);
-                            int register_left_off_at = ((int)c.audio_len) - 1;
-                            c.audio_len = ((int)c.audio_len) + sf_read_float(c.inf, &(c.audio_buffer[register_left_off_at]), left_to_cover);
+                            int left_to_cover = ((int) channels[station].length) - ((int)channels[station].audio_len);
+                            int register_left_off_at = ((int)channels[station].audio_len) - 1;
+                            channels[station].audio_len = ((int)channels[station].audio_len) + sf_read_float(channels[station].inf, &(channels[station].audio_buffer[register_left_off_at]), left_to_cover);
                             break;
                         }
                     }
                 }
-                c.audio_index = 0;  // Var used to keep track of position in audio array
+                channels[station].audio_index = 0;  // Var used to keep track of position in audio array
             } else {
-                c.audio_index += c.num_channels;        // For mono data, variables will increment by one.
-                c.audio_len -= c.num_channels;          // For stereo data, variables must increment by 2, since both channel bytes appear as a pair in memory.
+                channels[station].audio_index += channels[station].num_channels;        // For mono data, variables will increment by one.
+                channels[station].audio_len -= channels[station].num_channels;          // For stereo data, variables must increment by 2, since both channel bytes appear as a pair in memory.
             }
         }
 
         // First store the current sample(s) into the FIR filter's ring buffer
-        if(c.num_channels == 0) {
-            c.fir_buffer_mono[fir_index] = c.audio_buffer[c.audio_index];
+        if(channels[station].num_channels == 0) {
+            channels[station].fir_buffer_mono[channels[station].fir_index] = channels[station].audio_buffer[channels[station].audio_index];
         } else {
             // In stereo operation, generate sum and difference signals
-            fir_buffer_mono[fir_index] = 
-                c.audio_buffer[c.audio_index] + c.audio_buffer[c.audio_index + 1];
-            fir_buffer_stereo[fir_index] = 
-                c.audio_buffer[c.audio_index] - c.audio_buffer[c.audio_index + 1];
+            channels[station].fir_buffer_mono[channels[station].fir_index] = 
+                channels[station].audio_buffer[channels[station].audio_index] + channels[station].audio_buffer[channels[station].audio_index + 1];
+            channels[station].fir_buffer_stereo[channels[station].fir_index] = 
+                channels[station].audio_buffer[channels[station].audio_index] - channels[station].audio_buffer[channels[station].audio_index + 1];
         }
         
-        fir_index++;
-        if(fir_index >= FIR_SIZE) 
-            fir_index = 0;
+        channels[station].fir_index++;
+        if(channels[station].fir_index >= FIR_SIZE) 
+            channels[station].fir_index = 0;
         
         /* Now apply the FIR low-pass filter.
          * As the FIR filter is symmetric, we do not multiply all 
@@ -247,8 +259,8 @@ int fm_mpx_get_samples(float *mpx_buffer, int station) {
          */
         float out_mono = 0;    // Store filtered mono signal
         float out_stereo = 0;  // Store filtered stereo signal  
-        int ifbi = fir_index;  // ifbi = increasing FIR Buffer Index
-        int dfbi = fir_index;  // dfbi = decreasing FIR Buffer Index
+        int ifbi = channels[station].fir_index;  // ifbi = increasing FIR Buffer Index
+        int dfbi = channels[station].fir_index;  // dfbi = decreasing FIR Buffer Index
         for(int fi=0; fi<FIR_HALF_SIZE; fi++) {  // fi = Filter Index
 
             // Decrement dfbi to read buffer backwards, and reset dfbi if end of buffer is reached.
@@ -258,11 +270,11 @@ int fm_mpx_get_samples(float *mpx_buffer, int station) {
 
             // Calculate the filtered audio signal by multiplying the filter coefficient by the sum of
             // two samples from the FIR buffer.
-            out_mono += low_pass_fir[fi] * (fir_buffer_mono[ifbi] + fir_buffer_mono[dfbi]);
+            out_mono += channels[station].low_pass_fir[fi] * (channels[station].fir_buffer_mono[ifbi] + channels[station].fir_buffer_mono[dfbi]);
 
             // Do the same for stereo
-            if(c.num_channels > 1)
-                out_stereo += low_pass_fir[fi] * (fir_buffer_stereo[ifbi] + fir_buffer_stereo[dfbi]);
+            if(channels[station].num_channels > 1)
+                out_stereo += channels[station].low_pass_fir[fi] * (channels[station].fir_buffer_stereo[ifbi] + channels[station].fir_buffer_stereo[dfbi]);
 
             // Increment ifbi to read buffer forwards, and reset if out of bounds
             ifbi++;
@@ -277,7 +289,7 @@ int fm_mpx_get_samples(float *mpx_buffer, int station) {
             mpx_buffer[i] +    // RDS data samples are currently in mpx_buffer
             4.05*out_mono;     // Unmodulated monophonic (or stereo-sum) signal
             
-        if(c.num_channels > 1) {
+        if(channels[station].num_channels > 1) {
             mpx_buffer[i] +=
                 4.05 * carrier_38[phase_38] * out_stereo + // Stereo difference signal
                 .9*carrier_19[phase_19];                  // Stereo pilot tone
@@ -288,7 +300,7 @@ int fm_mpx_get_samples(float *mpx_buffer, int station) {
             if(phase_38 >= 6) phase_38 = 0;
         }
             
-        c.audio_pos++;   
+        channels[station].audio_pos++;   
         
     }
     
@@ -298,14 +310,11 @@ int fm_mpx_get_samples(float *mpx_buffer, int station) {
 
 int fm_mpx_close() {
     
-    for(int i = 0; i < MAX_STATIONS; i++)
-        if(sf_close(inf[i]))
+    for(int i = 0; i < MAX_STATIONS; i++) {
+        if(sf_close(channels[i].inf))
             fprintf(stderr, "Error closing audio file");
-    
-    //Free memory for all buffers
-    if(audio_buffers != NULL)
-        for(int i = 0; i < sizeof(audio_buffers) / sizeof(float); i++)
-            free(audio_buffers[i]);
+        free(channels[i].audio_buffer);
+    }
     
     return 0;
 }
