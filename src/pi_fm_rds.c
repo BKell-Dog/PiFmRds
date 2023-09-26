@@ -460,7 +460,6 @@ int tx(uint32_t carrier_freq, int stations) {
                 }
                 channels[station].data_len = DATA_SIZE;
                 channels[station].data_index = 0;
-                printf("DATA LEN: %d\n", channels[station].data_len);
             }
             
             float dval = channels[station].data[channels[station].data_index] * (DEVIATION / 10.);
@@ -477,15 +476,9 @@ int tx(uint32_t carrier_freq, int stations) {
             free_slots -= SUBSIZE;
         }
         
-        if (channels[station].virtbase == NULL)
-            fatal("Virtbase is null\n");
-        //printf("Virtbase: %u \n",channels[station].virtbase);
-        printf("Assigning\n");
         channels[station].last_cb = (uint32_t)channels[station].virtbase + last_sample * sizeof(dma_cb_t) * 2;
-        fatal("After last cb assignment");
         if (station == stations - 1)
             station = 0;
-        printf("End of loop");
     }
 
     return 0;
@@ -508,10 +501,7 @@ setup_sighandlers(void)
 void
 init_control_blocks(uint32_t carrier_freq, int station)
 {
-    if (mbox.virt_addr == NULL)
-        fatal("VIRT ADDR IS NULL EARLY");
     channels[station].virtbase = mbox.virt_addr + (NUM_PAGES * 4096 * (station - 1));
-    printf("Virt base: %u\n", channels[station].virtbase);
     dma_cb_t *cbp = channels[station].cb;
     uint32_t phys_sample_dst = CM_GP0DIV + (station * 0x8);
     uint32_t phys_pwm_fifo_addr = PWM_PHYS_BASE + 0x18;
@@ -690,9 +680,12 @@ int setup(char *audio_file, uint32_t carrier_freq, int stations, uint16_t pi, ch
     // Start PWM/PCM timing activity
     init_hardware(stations, ppm);
     
-    // Setup control block architecture
-    init_control_blocks(carrier_freq, stations);
-    
+    for (int station = 0; station < stations && station < MAX_STATIONS; station++)
+    {
+        // Setup control block architecture
+        init_control_blocks(carrier_freq, station);
+    }
+
     // Setup RDS data
     init_rds(pi, ps, rt, 0);
 
