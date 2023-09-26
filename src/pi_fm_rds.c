@@ -108,31 +108,14 @@
 #include "rds.h"
 #include "fm_mpx.h"
 #include "control_pipe.h"
-
 #include "mailbox.h"
 #define MBFILE            DEVICE_FILE_NAME    /* From mailbox.h */
 
-#if (RASPI)==1
-#define PERIPH_VIRT_BASE 0x20000000
-#define PERIPH_PHYS_BASE 0x7e000000
-#define DRAM_PHYS_BASE 0x40000000
-#define MEM_FLAG 0x0c
-#define PLLFREQ 500000000.
-#elif (RASPI)==2
-#define PERIPH_VIRT_BASE 0x3f000000
-#define PERIPH_PHYS_BASE 0x7e000000
-#define DRAM_PHYS_BASE 0xc0000000
-#define MEM_FLAG 0x04
-#define PLLFREQ 500000000.
-#elif (RASPI)==4
 #define PERIPH_VIRT_BASE 0xfe000000  // We use this peripheral address because we are on a BCM2711 in "Low Peripheral" mode (see doc pg. 5).
 #define PERIPH_PHYS_BASE 0x7e000000
 #define DRAM_PHYS_BASE 0xc0000000
 #define MEM_FLAG 0x04
 #define PLLFREQ 750000000.
-#else
-#error Unknown Raspberry Pi version (variable RASPI)
-#endif
 
 #define NUM_SAMPLES        50000
 #define NUM_CBS            (NUM_SAMPLES * 2)
@@ -305,7 +288,6 @@ static volatile uint32_t *gpio_reg;
 #define PAGE_SHIFT    12
 #define NUM_PAGES    ((sizeof(struct channel) + PAGE_SIZE - 1) >> PAGE_SHIFT)
 static uint8_t _is_setup = 0;
-unsigned memory_size = NUM_PAGES * 4096;
 
 // Very short delay as demanded per datasheet
 static void
@@ -340,7 +322,6 @@ terminate(int num)
     }
     
     fm_mpx_close();
-    close_control_pipe();
 
     if (mbox.virt_addr != NULL) {
         unmapmem(mbox.virt_addr, NUM_PAGES * 4096);
@@ -459,8 +440,6 @@ int tx(uint32_t carrier_freq, int stations) {
             channels[station].ps_count++;
         }
         
-        printf("Past varying PS\n");
-        
         usleep(5000);
 
         // Calculate the number of free slots left in the DMA buffer
@@ -469,29 +448,26 @@ int tx(uint32_t carrier_freq, int stations) {
         int this_sample = (cur_cb - (uint32_t)channels[station].virtbase) / (sizeof(dma_cb_t) * 2);
         int free_slots = this_sample - last_sample;
 
-        printf("Past cur_bc calcs\n");
-
         if (free_slots < 0)
             free_slots += NUM_SAMPLES;
 
         while (free_slots >= SUBSIZE) {
             // get more baseband samples if necessary
             if(channels[station].data_len == 0) {
-                printf("About to fetch samples\n");
                 if(fm_mpx_get_samples(channels[station].data, station) < 0 ) {
                     printf("Something went horribly wrong while fetching samples.\n");
                     terminate(0);
                 }
-                printf("Past getting more samples\n");
                 channels[station].data_len = DATA_SIZE;
                 channels[station].data_index = 0;
+                printf("DATA LEN: %d\n", channels[station].data_len);
             }
             
             float dval = channels[station].data[channels[station].data_index] * (DEVIATION / 10.);
             channels[station].data_index++;
             channels[station].data_len--;
 
-            int intval = (int)((floor)(dval));
+            int intval = (int)(floor(dval));
             //int frac = (int)((dval - (float)intval) * SUBSIZE);
 
             channels[station].sample[last_sample++] = (0x5A << 24 | channels[station].freq_ctl) + intval; //(frac > j ? intval + 1 : intval);
@@ -500,9 +476,13 @@ int tx(uint32_t carrier_freq, int stations) {
 
             free_slots -= SUBSIZE;
         }
-        printf("After free slot while loop\n");
-        channels[station].last_cb = (uint32_t)channels[station].virtbase + last_sample * sizeof(dma_cb_t) * 2;
         
+        if (channels[station].virtbase == NULL)
+            fatal("Virtbase is null\n");
+        //printf("Virtbase: %u \n",channels[station].virtbase);
+        printf("Assigning\n");
+        channels[station].last_cb = (uint32_t)channels[station].virtbase + last_sample * sizeof(dma_cb_t) * 2;
+        fatal("After last cb assignment");
         if (station == stations - 1)
             station = 0;
         printf("End of loop");
@@ -528,7 +508,10 @@ setup_sighandlers(void)
 void
 init_control_blocks(uint32_t carrier_freq, int station)
 {
-    channels[station].virtbase = mbox.virt_addr + (memory_size * station);
+    if (mbox.virt_addr == NULL)
+        fatal("VIRT ADDR IS NULL EARLY");
+    channels[station].virtbase = mbox.virt_addr + (NUM_PAGES * 4096 * (station - 1));
+    printf("Virt base: %u\n", channels[station].virtbase);
     dma_cb_t *cbp = channels[station].cb;
     uint32_t phys_sample_dst = CM_GP0DIV + (station * 0x8);
     uint32_t phys_pwm_fifo_addr = PWM_PHYS_BASE + 0x18;
@@ -561,7 +544,9 @@ init_control_blocks(uint32_t carrier_freq, int station)
     }
     cbp--;
     cbp->next = mem_virt_to_phys(channels[station].virtbase);   // Here we reset the 'next' val of the last cb to be the address
-}                                                               // of the first cb (mbox.virt_addr), so we make an infinite loop.
+                                                                // of the first cb (mbox.virt_addr), so we make an infinite loop.
+    printf("Still stored in channel struct: %u \n", channels[station].virtbase);
+}
 
 void 
 init_rds(uint16_t pi, char *ps, char *rt, int station) {
@@ -657,6 +642,8 @@ int setup(char *audio_file, uint32_t carrier_freq, int stations, uint16_t pi, ch
 {
     if (_is_setup == 1)
         fatal("Error: setup(..) has already been called before\n");
+    if (stations == 0)
+            fatal("Error in number of stations");
 
     // Catch all kind of kill signals
     setup_sighandlers();
@@ -667,7 +654,7 @@ int setup(char *audio_file, uint32_t carrier_freq, int stations, uint16_t pi, ch
     clk_reg = map_peripheral(CLK_VIRT_BASE, CLK_LEN);
     gpio_reg = map_peripheral(GPIO_VIRT_BASE, GPIO_LEN);
     if (pwm_reg == NULL || dma_reg == NULL || clk_reg == NULL || gpio_reg == NULL)
-        fatal("ERROR: One of the peripheral registers is NULL.");
+        fatal("ERROR: One of the peripheral registers is NULL.\n");
         
     for (int i = 0; i < MAX_STATIONS; i++)
     {
@@ -675,7 +662,7 @@ int setup(char *audio_file, uint32_t carrier_freq, int stations, uint16_t pi, ch
     }    
         
     // DMA channel 0 begins at 0xfe007000, channel 1 at 0xfe007100. Since the first address is 
-    // already mapped, we can access the location 100 registers down from DMA base to access channel 1.
+    // already mapped, we can access the location 100 registers down from DMA base to access channel 1, etc.
     for (int i = 0; i < DMA_CHANNELS && i < stations; i++)
     {
         channels[i].dma_reg = &dma_reg[DMA_CHANNEL_INC * i];
@@ -685,8 +672,8 @@ int setup(char *audio_file, uint32_t carrier_freq, int stations, uint16_t pi, ch
     mbox.handle = mbox_open();
     if (mbox.handle < 0)
         fatal("Failed to open mailbox. Check kernel support for vcio / BCM2711 mailbox.\n");
-    printf("Allocating physical memory: size = %d     ", stations * NUM_PAGES * 4096);
-    if(! (mbox.mem_ref = mem_alloc(mbox.handle, stations * memory_size, 4096, MEM_FLAG))) { // We multiply by var "stations" to increase memory size
+    printf("Allocating physical memory: size = %d     ", stations * NUM_PAGES * PAGE_SIZE);
+    if(! (mbox.mem_ref = mem_alloc(mbox.handle, stations * NUM_PAGES * 4096, PAGE_SIZE, MEM_FLAG))) { // We multiply by var "stations" to increase memory size
         fatal("Could not allocate memory.\n");
     }
     // TODO: How do we know that succeeded?
@@ -695,11 +682,11 @@ int setup(char *audio_file, uint32_t carrier_freq, int stations, uint16_t pi, ch
         fatal("Could not lock memory.\n");
     }
     printf("bus_addr = %x     ", mbox.bus_addr);
-    if(! (mbox.virt_addr = mapmem(BUS_TO_PHYS(mbox.bus_addr), stations * memory_size))) {
+    if(! (mbox.virt_addr = mapmem(BUS_TO_PHYS(mbox.bus_addr), stations * NUM_PAGES * 4096))) {
         fatal("Could not map memory.\n");
     }
     printf("virt_addr = %p\n", mbox.virt_addr);
-        
+    
     // Start PWM/PCM timing activity
     init_hardware(stations, ppm);
     
@@ -804,4 +791,14 @@ int main(int argc, char **argv) {
  * 
  * Thus we have inserted our desired data for GPIO 11 without disturbing any other data, and can write
  * back to GPIO_BASE + GPFSEL1 as a 32 bit whole.
+ * 
+ * Note 2: On the mailbox interface
+ * 
+ * The mailbox interface is used to communicate from one core to another. In this program it is used by
+ * the ARM CPU to request RAM space from the VideoCore (see BCM2711 Docs pg. 5). This RAM is needed since
+ * the memory mapping of the Pi 1 (the original platform of this program) was altered in a way that no one
+ * in the forums could figure out. Entire regions of memory were not read-only. Richard Hirst wrote this 
+ * mailbox solution without explaining why or how it works exactly, and now we must treat it as black magic
+ * (see https://forums.raspberrypi.com//viewtopic.php?p=699651#p699651).
+ * 
 */

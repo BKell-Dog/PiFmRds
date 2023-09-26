@@ -164,11 +164,10 @@ int fm_mpx_open(char *filename, size_t len, int station) {
         */
             
         channels[station].audio_pos = channels[station].downsample_factor;
-        channels[station].audio_buffer = alloc_empty_buffer(channels[station].length * channels[station].num_channels);
+        channels[station].audio_buffer = alloc_empty_buffer(channels[station].length * channels[station].num_channels); // Buffer length is 10,000 for stereo, 5,000 for mono.
         if(channels[station].audio_buffer == NULL) 
             return -1;
     
-
     } // end if(filename != NULL)
     else {
         printf("Error: no audio found.\n");
@@ -310,7 +309,9 @@ int fm_mpx_get_samples(float *mpx_buffer, int station) {
 
 int fm_mpx_close() {
     
-    for(int i = 0; i < MAX_STATIONS; i++) {
+    for(int i = 0; i < DMA_CHANNELS; i++) {
+        if(channels[i].inf == NULL || channels[i].audio_buffer == NULL)
+            continue;
         if(sf_close(channels[i].inf))
             fprintf(stderr, "Error closing audio file");
         free(channels[i].audio_buffer);
